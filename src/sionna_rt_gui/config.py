@@ -267,12 +267,13 @@ class SrkDemoConfig:
 class GuiMode(Enum):
     HIDDEN = 0
     FULL = 1
+    SRK_DEMO = 2
 
-
-GUI_MODE_NAMES = ["Hidden", "Full"]
-assert len(GUI_MODE_NAMES) == len(GuiMode)
 
 # ------------------------
+
+GUI_MODE_NAMES = ["Hidden", "Full", "SRK demo"]
+assert len(GUI_MODE_NAMES) == len(GuiMode)
 
 
 @dataclass(kw_only=True)
@@ -283,7 +284,7 @@ class GuiConfig:
     # Logging
     log_level: int = logging.INFO
 
-    gui_mode: GuiMode = GuiMode.FULL
+    gui_mode: GuiMode = GuiMode.SRK_DEMO
     show_polyscope_gui: bool = False
     show_help_window: bool = False
     use_live_reload: bool = False
