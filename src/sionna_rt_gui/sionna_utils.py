@@ -390,3 +390,49 @@ def get_normal_for_path(
         return si.n.numpy().squeeze()
 
     return None
+
+
+def prepare_valid_taps(
+    a: np.ndarray, tau: np.ndarray, tx_idx: int, return_vlims: bool = False
+) -> tuple[list[np.ndarray], list[np.ndarray], int]:
+    """
+    Inputs:
+    - a: [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
+    - tau: [num_rx, num_tx, num_paths] or [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths]
+
+    Outputs:
+    - filtered_a: list of `num_rx` arrays of shape [num_paths]
+    - filtered_tau: list of `num_rx` arrays of shape [num_paths]
+    - n_valid: total number of valid taps
+    - (min_a, max_a): optional
+    - (min_tau, max_tau): optional
+    """
+
+    if tau.ndim == 3:
+        # Reindex tau to match shape of a
+        tau = tau[:, np.newaxis, :, np.newaxis, :, np.newaxis]
+
+    # For each rx, filter out invalid taps
+    filtered_a = []
+    filtered_tau = []
+    n_valid = 0
+    tau_min, tau_max = np.inf, -np.inf
+    a_min, a_max = np.inf, -np.inf
+    for rx_idx in range(tau.shape[0]):
+        valid = tau[rx_idx, :, tx_idx, ...] >= 0
+        a_abs = np.abs(a[rx_idx, :, tx_idx, ...][valid])
+        # Scale to ns
+        tau_rescaled = tau[rx_idx, :, tx_idx, ...][valid] / 1e-9
+
+        filtered_a.append(a_abs)
+        filtered_tau.append(tau_rescaled)
+        n_valid += tau_rescaled.size
+        if return_vlims and tau_rescaled.size > 0:
+            tau_min = min(tau_min, tau_rescaled.min())
+            tau_max = max(tau_max, tau_rescaled.max())
+            a_min = min(a_min, a_abs.min())
+            a_max = max(a_max, a_abs.max())
+
+    if return_vlims:
+        return filtered_a, filtered_tau, n_valid, (a_min, a_max), (tau_min, tau_max)
+    return filtered_a, filtered_tau, n_valid
