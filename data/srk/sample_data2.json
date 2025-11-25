@@ -1,0 +1,26 @@
+{
+    "msg_type": "ue_stats_report",
+    "timestamp": 1727347875000,
+    "UE_stats": [
+        {
+            "ue_id": "UE 0",
+            "rnti": 13579,
+            "mcs_up": 10,
+            "mcs_down": 15,
+            "bler_up": 0.045,
+            "bler_down": 0.035,
+            "num_prbs_up": 12,
+            "num_prbs_down": 30
+        },
+        {
+            "ue_id": "UE 1",
+            "rnti": 24680,
+            "mcs_up": 18,
+            "mcs_down": 24,
+            "bler_up": 0.022,
+            "bler_down": 0.012,
+            "num_prbs_up": 35,
+            "num_prbs_down": 65
+        }
+    ]
+}
