@@ -1,0 +1,21 @@
+# Path computation and CIR settings
+paths:
+  snr_offset_db: -50.0
+  num_taps: 100
+  # Throttle expensive ray tracing to reduce GPU load and PRACH interference
+  # 0.1 = update every 100ms, 1.0 = update every second
+  min_update_delay_s: 0.01  # Update channel 5 times per second instead of 60+
+
+# Sionna Research Kit demo settings
+srk_demo:
+  max_noise_std_db: -4
+  n_ues: 1
+  play_animations: true
+  show_gpu_utilization: false
+
+rendering:
+  default_resolution: [1920, 1010]  # [width, height] in pixels
+
+radio_map:
+  cell_size: [0.25, 0.25]  # Cell size in meters [width, height]
+  log_samples_per_it: 9.0 

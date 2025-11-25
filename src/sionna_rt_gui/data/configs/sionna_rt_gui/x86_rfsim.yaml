@@ -1,0 +1,10 @@
+# Path computation and CIR settings
+paths:
+  snr_offset_db: -80.0
+  num_taps: 100
+
+# Sionna Research Kit demo settings
+srk_demo:
+  max_noise_std_db: 16
+  n_ues: 1
+  play_animations: true
