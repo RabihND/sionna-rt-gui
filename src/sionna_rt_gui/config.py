@@ -210,6 +210,60 @@ class RenderingConfig:
 # ------------------------
 
 
+class StatsPlottingMode(Enum):
+    DISABLED = 0
+    DOWNLINK = 1
+    UPLINK = 2
+    BOTH = 3
+
+
+STATS_PLOTTING_MODE_NAMES = ["None", "DL", "UL", "DL & UL"]
+assert len(STATS_PLOTTING_MODE_NAMES) == len(StatsPlottingMode)
+
+
+@dataclass(kw_only=True)
+class SrkDemoConfig:
+    # --- Channel emulator
+    show_cir: bool = True
+    channel_host: str = "localhost"
+    channel_port: int = 5556
+    # Enable sending CIR updates to the channel emulation server.
+    cir_send_updates: bool = True
+    # When a user device is being moved or is animated, new CIRs are generated
+    # at every frame. However, we don't want to flood the server with new CIR messages.
+    # Wait until this amount of time has passed since the last CIR was sent before sending
+    # the new CIR to the server.
+    cir_min_send_delay_s: float = 1.0
+    # Maximum delay to show in the CIR plot, in ns.
+    cir_max_delay_to_plot_ns: float | None = 1500
+    # Maximum noise std value to send to the server.
+    max_noise_std_db: float = -4.0
+    max_noise_std = 10 ** (max_noise_std_db / 10.0)
+
+    # --- Stats server & display
+    stats_host: str = "localhost"
+    stats_port: int = 5555
+    stats_topic: str = "ue_stats"
+    # Per UE
+    stats_max_entries: int = 300
+    stats_plotting_mode_i: int = StatsPlottingMode.BOTH.value
+    stats_to_plot: list[str] = field(
+        default_factory=lambda: ["mcs", "bler", "num_prbs"]
+    )
+
+    # --- Neural receiver
+    use_neural_receiver: bool = False
+
+    # --- Demo scenario
+    n_ues: int = 1
+    play_animations: bool = True
+
+    # --- Display
+    show_gpu_utilization: bool = True
+    gpu_utilization_interval_s: float = 0.5
+    osm_credit_string: str | None = "Map data from OpenStreetMap"
+
+
 class GuiMode(Enum):
     HIDDEN = 0
     FULL = 1
@@ -261,6 +315,9 @@ class GuiConfig:
 
     # Paths
     paths: PathsConfig = field(default_factory=PathsConfig)
+
+    # Sionna Research Kit demo
+    srk_demo: SrkDemoConfig = field(default_factory=SrkDemoConfig)
 
     def __post_init__(self):
         if self.scene_filename is None:
