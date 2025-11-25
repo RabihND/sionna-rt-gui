@@ -70,7 +70,7 @@ class AntennaArrayConfig:
 
 @dataclass(kw_only=True)
 class RadioMapConfig:
-    auto_update: bool = True
+    auto_update: bool = False
     accumulate_max_samples_per_tx: int = int(1e10)
 
     # -- Computation
