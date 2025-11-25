@@ -20,12 +20,13 @@ from .animation import AnimationConfig, animation_gui, animation_tick
 from .antenna_array import antenna_array_gui
 from .config import (
     GuiConfig,
-    RadioMapConfig,
-    PathsConfig,
     GuiMode,
-    RenderingMode,
-    RENDERING_MODE_NAMES,
     NVIDIA_GREEN,
+    PathsConfig,
+    RadioMapConfig,
+    RENDERING_MODE_NAMES,
+    RenderingMode,
+    StatsPlottingMode,
 )
 from .rendering import (
     render_scene,
@@ -82,6 +83,11 @@ HELP_WINDOW_TABLES = {
     "Slice plane": {
         "S": "Toggle slice plane visibility (not supported in ray-traced rendering mode)",
         "Alt + left click drag": "Move slice plane along its normal",
+    },
+    "Sionna Research Kit demo": {
+        "B": "Toggle between downlink and uplink stats for plotting",
+        "N": "Toggle the neural receiver on / off",
+        "Z": "Toggle sending CIRs to the channel emulator",
     },
 }
 
@@ -1027,6 +1033,28 @@ class SionnaRtGui:
         # Ctrl + Q: exit
         if imgui_io.KeyCtrl and psim.IsKeyPressed(psim.ImGuiKey(ps.get_key_code("Q"))):
             ps.unshow()
+
+        if (self.srk_demo is not None) and (self.cfg.gui_mode == GuiMode.SRK_DEMO):
+            # B: next stats display mode
+            if psim.IsKeyPressed(psim.ImGuiKey(ps.get_key_code("B")), repeat=False):
+                self.cfg.srk_demo.stats_plotting_mode_i = {
+                    StatsPlottingMode.DISABLED.value: StatsPlottingMode.DOWNLINK.value,
+                    StatsPlottingMode.DOWNLINK.value: StatsPlottingMode.BOTH.value,
+                    StatsPlottingMode.UPLINK.value: StatsPlottingMode.BOTH.value,
+                    StatsPlottingMode.BOTH.value: StatsPlottingMode.DOWNLINK.value,
+                }[self.cfg.srk_demo.stats_plotting_mode_i]
+
+            # N: toggle the neural receiver on / off
+            if psim.IsKeyPressed(psim.ImGuiKey(ps.get_key_code("N")), repeat=False):
+                self.srk_demo.set_use_neural_receiver(
+                    not self.cfg.srk_demo.use_neural_receiver
+                )
+
+            # Z: toggle sending CIRs to the channel emulator
+            if psim.IsKeyPressed(psim.ImGuiKey(ps.get_key_code("Z")), repeat=False):
+                self.cfg.srk_demo.cir_send_updates = (
+                    not self.cfg.srk_demo.cir_send_updates
+                )
 
         self.was_mouse_dragging = has_mouse_drag
 
