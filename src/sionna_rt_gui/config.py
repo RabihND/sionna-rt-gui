@@ -294,7 +294,7 @@ class GuiConfig:
     # Either the path to an XML scene file, or the name of a built-in scene.
     scene_filename: str | None = None
     # Name of the built-in scene to load if no scene filename is provided.
-    default_scene_filename: str = "simple_street_canyon_with_cars"
+    default_scene_filename: str = "washington_dc"
     # Whether to create an example scenario with radio devices. Will auto-enable
     # if we're loading the default scene.
     create_example_scenario: bool = False
