@@ -1375,6 +1375,12 @@ class SionnaRtGui:
             if changed:
                 ps.set_build_default_gui_panels(self.cfg.show_polyscope_gui)
 
+            changed, flag = psim.Checkbox(
+                "Use kernel freezing", dr.flag(dr.JitFlag.KernelFreezing)
+            )
+            if changed:
+                dr.set_flag(dr.JitFlag.KernelFreezing, flag)
+
             psim.Spacing()
 
             if self.slice_plane is not None:
