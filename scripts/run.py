@@ -40,6 +40,12 @@ def main():
         default=None,
         help="Path to the Sionna RT scene to load (.xml file or name of a built-in scene).",
     )
+    parser.add_argument(
+        "--priority",
+        action="store_true",
+        help="Set real-time priority for the process (requires elevated privileges) and CPU affinity.",
+    )
+
     watch_group = parser.add_mutually_exclusive_group()
     watch_group.add_argument(
         "--watch", action="store_true", dest="watch", default=False
@@ -47,15 +53,35 @@ def main():
     watch_group.add_argument("--no-watch", action="store_false", dest="watch")
     args = parser.parse_args()
 
+    # --- Setup configs and logging
     cfg_overrides = {
         "use_live_reload": args.watch,
     }
     cfg = load_config(args.config, scene_filename=args.scene)
 
-    # Configure logging
     logging.basicConfig(
         level=cfg.log_level, format="%(asctime)s - %(levelname)s - %(message)s"
     )
+
+    # --- Setup priority, if requested
+    if args.priority:
+        log = logging.getLogger(__name__)
+
+        # Set CPU affinity for current process (CPUs 0, 1, 2, 3, 4)
+        os.sched_setaffinity(0, {10, 11, 12, 13, 14})
+
+        # Set low real-time priority (1 is lowest, 99 is highest)
+        param = os.sched_param(1)
+        try:
+            os.sched_setscheduler(0, os.SCHED_RR, param)
+            log.info("Set real-time priority: 1 (SCHED_RR)")
+        except PermissionError:
+            log.warning(
+                "Warning: Could not set real-time priority (requires elevated privileges)"
+            )
+
+        # Get current CPU affinity
+        log.info(f"Running on CPUs: {os.sched_getaffinity(0)}")
 
     # --- Initialization
     app = AppHolder(cfg, scene_filename=args.scene, overrides=cfg_overrides)
