@@ -15,7 +15,7 @@ from sionna import rt
 from sionna.rt.utils.geometry import rotation_matrix
 
 from .animation import trajectory_gui
-from .config import DEFAULT_SLICE_PLANE_NAME
+from .config import GuiMode, DEFAULT_SLICE_PLANE_NAME
 from .sionna_utils import set_or_update_radio_devices_polyscope
 
 
@@ -49,11 +49,18 @@ def selection_gui(
     psim.SetNextWindowSize(
         (w * gui.ui_scale, h * gui.ui_scale), psim.ImGuiCond_FirstUseEver
     )
-    # Top right corner
-    window_pos = (
-        window_resolution[0] - (w + 10) * gui.ui_scale,
-        10 * gui.ui_scale,
-    )
+    if gui.cfg.gui_mode == GuiMode.SRK_DEMO:
+        # Bottom left corner
+        window_pos = (
+            10 * gui.ui_scale,
+            window_resolution[1] - (h + 10) * gui.ui_scale,
+        )
+    else:
+        # Top right corner
+        window_pos = (
+            window_resolution[0] - (w + 10) * gui.ui_scale,
+            10 * gui.ui_scale,
+        )
     psim.SetNextWindowPos(window_pos, psim.ImGuiCond_FirstUseEver)
 
     _, keep_selection = psim.Begin("Selection##sionna", open=True)
