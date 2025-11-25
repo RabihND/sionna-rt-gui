@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 import gc
+import subprocess
 
 import drjit as dr
 
@@ -20,3 +21,20 @@ def drjit_cleanup():
     dr.sync_thread()
     # Note: there are several flags we care about preserving, so we don't reset them here.
     # dr.set_flag(dr.JitFlag.Default, True)
+
+
+def read_gpu_utilization() -> float | None:
+    try:
+        return (
+            subprocess.check_output(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=utilization.gpu",
+                    "--format=csv,noheader,nounits",
+                ]
+            )
+            .decode("utf-8")
+            .strip()
+        )
+    except Exception:
+        return None
