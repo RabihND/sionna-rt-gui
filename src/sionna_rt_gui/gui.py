@@ -48,6 +48,7 @@ from .sionna_utils import (
     set_or_update_radio_devices_polyscope,
 )
 from .selection import SelectionType, selection_gui
+from .srk_demo import SrkDemo
 
 CTRL_OR_CMD = "Cmd" if sys.platform == "darwin" else "Ctrl"
 HELP_WINDOW_TABLES = {
@@ -88,6 +89,13 @@ HELP_WINDOW_TABLES = {
 class SionnaRtGui:
     def __init__(self, cfg: GuiConfig):
         self.cfg = cfg
+
+        # --- Sionna Research Kit demo
+        self.srk_demo: SrkDemo | None = (
+            SrkDemo(self, self.cfg.srk_demo)
+            if self.cfg.gui_mode == GuiMode.SRK_DEMO
+            else None
+        )
 
         # --- Sionna RT
         # Scene
@@ -241,6 +249,32 @@ class SionnaRtGui:
             self.create_example_scenario(
                 set_camera=not was_initialized, add_radio_map=False
             )
+        if (self.cfg.gui_mode == GuiMode.SRK_DEMO) and (self.srk_demo is not None):
+            # --- SRK demo scenario
+            self.srk_demo.setup_demo_scenario()
+
+        elif self.cfg.create_example_scenario:
+            if not was_initialized:
+                ps.set_camera_view_matrix(
+                    np.array(
+                        [
+                            [
+                                2.0079615e-03,
+                                -9.9999154e-01,
+                                -3.9256822e-08,
+                                4.4776478e00,
+                            ],
+                            [7.8317523e-01, 1.5742097e-03, 6.2179816e-01, 1.1707677e01],
+                            [
+                                -6.2179959e-01,
+                                -1.2489425e-03,
+                                7.8317869e-01,
+                                -2.2836572e02,
+                            ],
+                            [0.0000000e00, 0.0000000e00, 0.0000000e00, 1.0000000e00],
+                        ]
+                    )
+                )
 
     def create_example_scenario(
         self, set_camera: bool = True, add_radio_map: bool = True
@@ -316,6 +350,8 @@ class SionnaRtGui:
         self.reset_and_setup_structures()
         self.scene = rt.load_scene(scene_path)
         remove_objects_duplicate_vertices(self.scene.mi_scene)
+        if self.srk_demo is not None:
+            self.srk_demo.reset_state()
 
         self.scene.tx_array = self.cfg.tx_array.create()
         self.scene.rx_array = self.cfg.rx_array.create()
@@ -522,6 +558,10 @@ class SionnaRtGui:
 
         # --- Radio device animations
         animation_tick(self, psim.GetIO().DeltaTime)
+
+        # --- Sionna Research Kit demo-specific code
+        if self.srk_demo is not None:
+            self.srk_demo.tick()
 
         # --- GUI
         self.gui()
@@ -843,6 +883,11 @@ class SionnaRtGui:
             # Switch to rasterization mode when activating the slice plane.
             self.set_rendering_mode(RenderingMode.RASTERIZATION)
 
+    def set_all_animations_playing(self, playing: bool):
+        self.animation_config.playing = playing
+        for traj in self.animation_config.trajectories.values():
+            traj.enabled = playing
+
     # ------------------------
 
     def process_inputs(self):
@@ -1055,6 +1100,11 @@ class SionnaRtGui:
                 (self.rm_colorbar.shape[1], self.rm_colorbar.shape[0]),
             )
             psim.End()
+
+        # --- Sionna Research Kit demo window
+        if (self.cfg.gui_mode == GuiMode.SRK_DEMO) and (self.srk_demo is not None):
+            self.srk_demo.gui()
+            return
 
         # --- Main GUI window
         psim.SetNextWindowSize(
