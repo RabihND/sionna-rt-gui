@@ -237,5 +237,6 @@ class ChannelEmulatorClient(SrkClientBase):
             "msg_type": "cir",
             "taps": taps.tolist(),
             "tap_indices": tap_indices.tolist(),
+            "taps_norm": norm,
             "noise_std": noise_std,
         }

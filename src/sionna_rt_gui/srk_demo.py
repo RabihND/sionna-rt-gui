@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import asdict
 import logging
+import json
+import os
 import time
 
 import numpy as np
@@ -275,6 +278,61 @@ class SrkDemo:
 
     # ------------------------
 
+    def export_cir_batch(self, output_filename: str, duration_s: float):
+        """
+        Export one CIR for each OFDM symbol in the given duration.
+        Advance the animation as we go.
+        """
+        # TODO: auto-cancel if there's no animation.
+
+        # Save all simulation parameters to a JSON file.
+        n_cirs = 100  # TODO
+        with open(output_filename, "w") as f:
+            json.dump(
+                {
+                    "batch": {
+                        # TODO: real information about the batch export.
+                        "n_cirs": n_cirs,
+                        "duration_s": duration_s,
+                    },
+                    "paths": asdict(self.main.cfg.paths),
+                    "srk": asdict(self.cfg),
+                },
+                f,
+                indent=4,
+            )
+
+        # 1 frame = 10ms
+        # 1 subframe = 1ms
+        # Number of slots per subframe depends on subcarrier spacing, e.g. 20kHz = ?
+        # 1 slot is made of 14 OFDM symbols (?)
+        # But is also depends on cyclic prefix, which is not the same for all OFDM symbols.
+        # - 1st and 2nd OFDM symbols in the first subframe have slightly longer cyclic prefix than the rest (?)
+        # - But maybe it's okay to ignore it and just subdivide the duration of the slot into N uniform parts of OFDM symbols.
+
+        # User should just specify a sampling frequency. It's the most universal.
+        #   (Sampling frequency is just equal to bandwidth, in the simplest case.)
+        #   Default value: subcarrier spacing.
+        # Then we can also control how many CIRs to actually simulate vs how many to extrapolate with Doppler (could have a heuristic based on the velocity of the UE + wavelength). Could be set as an "interpolation factor", which corresponds to `paths.num_time_steps`.
+
+        # Is it an issue if we extrapolate with Doppler as the UE moves on to another trajectory segment? We can acknowledge that as a limitation.
+
+        # If it's too slow, we could also place K receivers to compute taps for those in parallel.
+
+        output_bin_fname = os.path.splitext(output_filename)[0] + ".bin"
+        with open(output_bin_fname, "wb") as f:
+            # TODO: advance animation.
+            # TODO: render a progress bar in the GUI and "yield" at each iteration.
+            for cir_i in range(n_cirs):
+                cir = np.linspace(
+                    cir_i, cir_i + 1, self.main.cfg.paths.num_taps
+                ).astype(np.float32)
+                f.write(cir.tobytes())
+
+        self.log.info(f"CIR batch ({n_cirs} CIRs) exported to: {output_filename}")
+
+    # ------------------------
+
     def process_ue_stats(self, ue_stats: dict):
         # For each UE in the stats, add a row to the history
         for new_stats in ue_stats["UE_stats"]:
@@ -450,6 +508,26 @@ class SrkDemo:
                         server_port=self.cfg.channel_port,
                     )
             psim.NewLine()
+
+            # - CIR batch export
+
+            psim.SetNextItemWidth(185)
+            _, self.cfg.cir_output_filename = psim.InputText(
+                "Output filename", self.cfg.cir_output_filename
+            )
+            psim.SetNextItemWidth(185)
+            _, self.cfg.cir_export_duration_s = psim.InputFloat(
+                "Export duration (s)", self.cfg.cir_export_duration_s
+            )
+
+            if psim.Button("CIR batch export##cir_batch_export"):
+                self.export_cir_batch(
+                    output_filename=self.cfg.cir_output_filename,
+                    duration_s=self.cfg.cir_export_duration_s,
+                )
+
+            psim.NewLine()
+
             psim.TreePop()
 
         psim.Spacing()

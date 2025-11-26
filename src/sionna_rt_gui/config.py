@@ -240,6 +240,11 @@ class SrkDemoConfig:
     max_noise_std_db: float = -4.0
     max_noise_std = 10 ** (max_noise_std_db / 10.0)
 
+    # --- CIR batch export
+    cir_output_filename: str = "cir_export.json"
+    # TODO: automatically cover the whole trajectory duration when set to None?
+    cir_export_duration_s: float = 1.0
+
     # --- Stats server & display
     stats_host: str = "localhost"
     stats_port: int = 5555
