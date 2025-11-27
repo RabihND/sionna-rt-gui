@@ -76,16 +76,25 @@ bool read_cir_batch(const char *json_filename, BatchInfo batch_info) {
         // For each CIR, one float for the norm, then the CIR taps.
         float norm;
         fread(&norm, sizeof(float), 1, file);
-        float cir[batch_info.n_taps];
-        fread(cir, sizeof(float), batch_info.n_taps, file);
+        float cir[batch_info.n_taps * 2];
+        // (Real part, imaginary part) for each tap.
+        fread(cir, sizeof(float), batch_info.n_taps * 2, file);
 
         printf("--- CIR %d (norm = %f): [", i, norm);
         for (int j = 0; j < batch_info.n_taps; j++) {
-            printf("%f ", cir[j]);
+            printf("%f + %fj, ", cir[j * 2], cir[j * 2 + 1]);
         }
         printf("]\n");
     }
 
+    // Make sure we read the whole file.
+    if (fgetc(file) != EOF) {
+        fprintf(stderr, "Error: Extra data at end of file.\n");
+        fclose(file);
+        return false;
+    }
+
+    fclose(file);
     return true;
 }
 
