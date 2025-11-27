@@ -708,13 +708,18 @@ class SionnaRtGui:
 
     # ------------------------
 
-    def update_paths(self, clear_first: bool = False, show: bool = True):
+    def update_paths(
+        self,
+        clear_first: bool = False,
+        show: bool = True,
+        force: bool = False,
+        num_interpolation_steps: int | None = None,
+    ):
         # Optionally throttle path computations to reduce load
         current_time = time.time()
         time_since_last_update = current_time - self._last_paths_update_time
-        if time_since_last_update < self.cfg.paths.min_update_delay_s:
-            # Skip this update
-            return
+        if (time_since_last_update < self.cfg.paths.min_update_delay_s) and not force:
+            return  # Skip this update
 
         if clear_first:
             self.clear_paths()
@@ -733,7 +738,11 @@ class SionnaRtGui:
                 l_min=self.cfg.paths.l_min,
                 l_max=self.cfg.paths.l_max,
                 sampling_frequency=self.cfg.paths.sampling_frequency,
-                num_time_steps=self.cfg.paths.num_time_steps,
+                num_time_steps=(
+                    num_interpolation_steps
+                    if num_interpolation_steps is not None
+                    else self.cfg.paths.num_time_steps
+                ),
                 normalize=self.cfg.paths.normalize,
                 normalize_delays=self.cfg.paths.normalize_delays,
                 out_type="numpy",

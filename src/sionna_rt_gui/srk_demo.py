@@ -23,7 +23,7 @@ from .config import (
     StatsPlottingMode,
     STATS_PLOTTING_MODE_NAMES,
 )
-from .sionna_utils import prepare_valid_taps
+from .sionna_utils import prepare_valid_taps, prepare_and_normalize_cir
 from .srk_stats_client import (
     UEStatsSubscriber,
     STATS_FIELDS_NAMES,
@@ -278,59 +278,91 @@ class SrkDemo:
 
     # ------------------------
 
-    def export_cir_batch(self, output_filename: str, duration_s: float):
+    def export_cir_batch(
+        self,
+        output_filename: str,
+        duration_s: float,
+        sampling_frequency_hz: float,
+        interpolation_factor: int,
+    ):
         """
         Export one CIR for each OFDM symbol in the given duration.
         Advance the animation as we go.
         """
+        gui = self.main
+        # We will advance animations manually.
+        gui.set_all_animations_playing(False)
         # TODO: auto-cancel if there's no animation.
 
         # Save all simulation parameters to a JSON file.
-        n_cirs = 100  # TODO
+        n_cirs = int(np.ceil(duration_s * sampling_frequency_hz))
         with open(output_filename, "w") as f:
             json.dump(
                 {
                     "batch": {
-                        # TODO: real information about the batch export.
+                        "sampling_frequency_hz": sampling_frequency_hz,
+                        "interpolation_factor": interpolation_factor,
                         "n_cirs": n_cirs,
                         "duration_s": duration_s,
                     },
-                    "paths": asdict(self.main.cfg.paths),
+                    "paths": asdict(gui.cfg.paths),
                     "srk": asdict(self.cfg),
                 },
                 f,
                 indent=4,
             )
 
-        # 1 frame = 10ms
-        # 1 subframe = 1ms
-        # Number of slots per subframe depends on subcarrier spacing, e.g. 20kHz = ?
-        # 1 slot is made of 14 OFDM symbols (?)
-        # But is also depends on cyclic prefix, which is not the same for all OFDM symbols.
-        # - 1st and 2nd OFDM symbols in the first subframe have slightly longer cyclic prefix than the rest (?)
-        # - But maybe it's okay to ignore it and just subdivide the duration of the slot into N uniform parts of OFDM symbols.
-
-        # User should just specify a sampling frequency. It's the most universal.
-        #   (Sampling frequency is just equal to bandwidth, in the simplest case.)
-        #   Default value: subcarrier spacing.
-        # Then we can also control how many CIRs to actually simulate vs how many to extrapolate with Doppler (could have a heuristic based on the velocity of the UE + wavelength). Could be set as an "interpolation factor", which corresponds to `paths.num_time_steps`.
-
-        # Is it an issue if we extrapolate with Doppler as the UE moves on to another trajectory segment? We can acknowledge that as a limitation.
-
-        # If it's too slow, we could also place K receivers to compute taps for those in parallel.
-
+        # We compute one true CIR every `interpolation_factor` time steps, and interpolate
+        # the rest using Doppler.
+        # TODO: double-check that the Doppler vector is set correctly.
+        time_delta = interpolation_factor / sampling_frequency_hz
+        num_taps = gui.cfg.paths.num_taps
         output_bin_fname = os.path.splitext(output_filename)[0] + ".bin"
         with open(output_bin_fname, "wb") as f:
-            # TODO: advance animation.
+            from tqdm import tqdm
+
             # TODO: render a progress bar in the GUI and "yield" at each iteration.
-            for cir_i in range(n_cirs):
-                cir = np.linspace(
-                    cir_i, cir_i + 1, self.main.cfg.paths.num_taps
-                ).astype(np.float32)
-                f.write(np.array([np.linalg.norm(cir)], dtype=np.float32).tobytes())
-                f.write(cir.tobytes())
+            for cir_i in tqdm(range(0, n_cirs, interpolation_factor)):
+                # Advance animation
+                animation_tick(gui, time_delta=time_delta, force=True)
+
+                # Compute updated paths
+                # TODO: interpolate by the requested factor
+                gui.update_paths(
+                    clear_first=False,
+                    show=False,
+                    force=True,
+                    num_interpolation_steps=interpolation_factor,
+                )
+
+                taps_results = prepare_and_normalize_cir(
+                    taps=gui.paths_taps,
+                    num_taps=num_taps,
+                    bandwidth=gui.cfg.paths.bandwidth,
+                    snr_offset_db=gui.cfg.paths.snr_offset_db,
+                    max_noise_std=self.cfg.max_noise_std,
+                    as_arrays=True,
+                )
+                taps_norm = taps_results["taps_norm"]
+                taps = taps_results["taps"]
+                assert taps_norm.shape == (interpolation_factor,)
+                assert taps.shape == (interpolation_factor, num_taps * 2)
+                assert taps_norm.dtype == np.float32
+                assert taps.dtype == np.float32
+
+                # Strictly respect the CIR count even if not a multiple of the interpolation factor.
+                if cir_i + interpolation_factor >= n_cirs:
+                    taps_norm = taps_norm[: n_cirs - cir_i]
+                    taps = taps[: n_cirs - cir_i, :]
+
+                # For each CIR (including the interpolated ones), write:
+                #     norm, tap0_real, tap0_imag, tap1_real, tap1_imag, ..., tapN_real, tapN_imag
+                for k in range(taps.shape[0]):
+                    f.write(taps_norm[k].tobytes())
+                    f.write(taps[k, :].tobytes())
 
         self.log.info(f"CIR batch ({n_cirs} CIRs) exported to: {output_filename}")
+        # Note: we leave all animations paused even if they were playing before.
 
     # ------------------------
 
@@ -522,9 +554,16 @@ class SrkDemo:
             )
 
             if psim.Button("CIR batch export##cir_batch_export"):
+                sampling_frequency_hz = (
+                    self.cfg.cir_sampling_frequency_hz
+                    if self.cfg.cir_sampling_frequency_hz is not None
+                    else self.main.cfg.paths.subcarrier_spacing
+                )
                 self.export_cir_batch(
                     output_filename=self.cfg.cir_output_filename,
                     duration_s=self.cfg.cir_export_duration_s,
+                    sampling_frequency_hz=sampling_frequency_hz,
+                    interpolation_factor=self.cfg.cir_export_interpolation_factor,
                 )
 
             psim.NewLine()

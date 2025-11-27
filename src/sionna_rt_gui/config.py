@@ -134,7 +134,7 @@ class PathsConfig:
     diffraction_lit_region: bool = False
 
     # CIR
-    compute_cir: bool = False
+    compute_cir: bool = True
     num_taps: int = 10
     fft_size: int = 512
     subcarrier_spacing: float = 30e3
@@ -243,7 +243,14 @@ class SrkDemoConfig:
     # --- CIR batch export
     cir_output_filename: str = "cir_export.json"
     # TODO: automatically cover the whole trajectory duration when set to None?
-    cir_export_duration_s: float = 1.0
+    # Sampling frequency for the CIR batch export.
+    # The total number of CIRs will be equal to:
+    #     ceil(cir_export_duration_s * cir_sampling_frequency_hz)
+    # If not set, the sampling frequency will be equal to the subcarrier spacing.
+    cir_sampling_frequency_hz: float | None = None
+    # Compute one true CIR every `cir_export_interpolation_factor` time steps, and interpolate
+    # the rest using Doppler.
+    cir_export_interpolation_factor: int = 14
 
     # --- Stats server & display
     stats_host: str = "localhost"
