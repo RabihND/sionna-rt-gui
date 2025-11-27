@@ -327,6 +327,7 @@ class SrkDemo:
                 cir = np.linspace(
                     cir_i, cir_i + 1, self.main.cfg.paths.num_taps
                 ).astype(np.float32)
+                f.write(np.array([np.linalg.norm(cir)], dtype=np.float32).tobytes())
                 f.write(cir.tobytes())
 
         self.log.info(f"CIR batch ({n_cirs} CIRs) exported to: {output_filename}")

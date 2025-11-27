@@ -73,10 +73,13 @@ bool read_cir_batch(const char *json_filename, BatchInfo batch_info) {
 
     // Read CIRs
     for (int i = 0; i < batch_info.n_cirs; i++) {
+        // For each CIR, one float for the norm, then the CIR taps.
+        float norm;
+        fread(&norm, sizeof(float), 1, file);
         float cir[batch_info.n_taps];
         fread(cir, sizeof(float), batch_info.n_taps, file);
 
-        printf("--- CIR %d: [", i);
+        printf("--- CIR %d (norm = %f): [", i, norm);
         for (int j = 0; j < batch_info.n_taps; j++) {
             printf("%f ", cir[j]);
         }
