@@ -243,6 +243,7 @@ class SrkDemoConfig:
     # --- CIR batch export
     cir_output_filename: str = "cir_export.json"
     # TODO: automatically cover the whole trajectory duration when set to None?
+    cir_export_duration_s: float = 0.1
     # Sampling frequency for the CIR batch export.
     # The total number of CIRs will be equal to:
     #     ceil(cir_export_duration_s * cir_sampling_frequency_hz)
