@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import asdict
 import logging
-import json
-import os
 import time
 
 import numpy as np
@@ -23,7 +20,8 @@ from .config import (
     StatsPlottingMode,
     STATS_PLOTTING_MODE_NAMES,
 )
-from .sionna_utils import prepare_valid_taps, prepare_and_normalize_cir
+from .sionna_utils import prepare_valid_taps
+from .srk_batch_export import export_cir_batch, CirBatchExporter
 from .srk_stats_client import (
     UEStatsSubscriber,
     STATS_FIELDS_NAMES,
@@ -57,6 +55,7 @@ class SrkDemo:
         # Keep running min/max of each axis of the CIR plot so that it
         # doesn´t jump around too much with animated UEs.
         self.cir_plot_vlims = [(np.inf, -np.inf), (np.inf, -np.inf)]
+        self.batch_cir_exporter: CirBatchExporter | None = None
 
         # --- Stats
         self.stats_client = UEStatsSubscriber()
@@ -231,9 +230,33 @@ class SrkDemo:
         # Force redraw at the next frame
         gui.reset_accumulation_requested = True
 
+        # TODO: remove this
+        if True:
+            self.batch_cir_exporter = export_cir_batch(
+                self.main,
+                self.cfg.cir_output_filename,
+                self.cfg.cir_export_duration_s,
+                (
+                    self.cfg.cir_sampling_frequency_hz
+                    or self.main.cfg.paths.subcarrier_spacing
+                ),
+                self.cfg.cir_export_interpolation_factor,
+            )
+
     # ------------------------
 
     def tick(self):
+
+        if self.batch_cir_exporter is not None:
+            try:
+                _ = next(self.batch_cir_exporter)
+            except StopIteration:
+                self.batch_cir_exporter = None
+                self.log.info("CIR batch export completed.")
+
+            # The export process prevents anything else from happening
+            return
+
         # Send updated CIR
         if self.channel_client.is_connected():
             self.channel_client.tick()
@@ -275,94 +298,6 @@ class SrkDemo:
         # Value changed, send a message to the channel emulator server.
         # The config will be applied once we received an acknowledgment from the server.
         self.channel_client.send_neural_receiver_config(v)
-
-    # ------------------------
-
-    def export_cir_batch(
-        self,
-        output_filename: str,
-        duration_s: float,
-        sampling_frequency_hz: float,
-        interpolation_factor: int,
-    ):
-        """
-        Export one CIR for each OFDM symbol in the given duration.
-        Advance the animation as we go.
-        """
-        gui = self.main
-        # We will advance animations manually.
-        gui.set_all_animations_playing(False)
-        # TODO: auto-cancel if there's no animation.
-
-        # Save all simulation parameters to a JSON file.
-        n_cirs = int(np.ceil(duration_s * sampling_frequency_hz))
-        with open(output_filename, "w") as f:
-            json.dump(
-                {
-                    "batch": {
-                        "sampling_frequency_hz": sampling_frequency_hz,
-                        "interpolation_factor": interpolation_factor,
-                        "n_cirs": n_cirs,
-                        "duration_s": duration_s,
-                    },
-                    "paths": asdict(gui.cfg.paths),
-                    "srk": asdict(self.cfg),
-                },
-                f,
-                indent=4,
-            )
-
-        # We compute one true CIR every `interpolation_factor` time steps, and interpolate
-        # the rest using Doppler.
-        # TODO: double-check that the Doppler vector is set correctly.
-        time_delta = interpolation_factor / sampling_frequency_hz
-        num_taps = gui.cfg.paths.num_taps
-        output_bin_fname = os.path.splitext(output_filename)[0] + ".bin"
-        with open(output_bin_fname, "wb") as f:
-            from tqdm import tqdm
-
-            # TODO: render a progress bar in the GUI and "yield" at each iteration.
-            for cir_i in tqdm(range(0, n_cirs, interpolation_factor)):
-                # Advance animation
-                animation_tick(gui, time_delta=time_delta, force=True)
-
-                # Compute updated paths
-                # TODO: interpolate by the requested factor
-                gui.update_paths(
-                    clear_first=False,
-                    show=False,
-                    force=True,
-                    num_interpolation_steps=interpolation_factor,
-                )
-
-                taps_results = prepare_and_normalize_cir(
-                    taps=gui.paths_taps,
-                    num_taps=num_taps,
-                    bandwidth=gui.cfg.paths.bandwidth,
-                    snr_offset_db=gui.cfg.paths.snr_offset_db,
-                    max_noise_std=self.cfg.max_noise_std,
-                    as_arrays=True,
-                )
-                taps_norm = taps_results["taps_norm"]
-                taps = taps_results["taps"]
-                assert taps_norm.shape == (interpolation_factor,)
-                assert taps.shape == (interpolation_factor, num_taps * 2)
-                assert taps_norm.dtype == np.float32
-                assert taps.dtype == np.float32
-
-                # Strictly respect the CIR count even if not a multiple of the interpolation factor.
-                if cir_i + interpolation_factor >= n_cirs:
-                    taps_norm = taps_norm[: n_cirs - cir_i]
-                    taps = taps[: n_cirs - cir_i, :]
-
-                # For each CIR (including the interpolated ones), write:
-                #     norm, tap0_real, tap0_imag, tap1_real, tap1_imag, ..., tapN_real, tapN_imag
-                for k in range(taps.shape[0]):
-                    f.write(taps_norm[k].tobytes())
-                    f.write(taps[k, :].tobytes())
-
-        self.log.info(f"CIR batch ({n_cirs} CIRs) exported to: {output_filename}")
-        # Note: we leave all animations paused even if they were playing before.
 
     # ------------------------
 
@@ -411,6 +346,11 @@ class SrkDemo:
         Simplified demo GUI.
         """
         ui_scale = self.main.ui_scale
+
+        # --- CIR batch export window
+        if self.batch_cir_exporter is not None:
+            self.batch_cir_exporter.gui()
+            return
 
         # --- Controls window
         w = 375
@@ -564,7 +504,8 @@ class SrkDemo:
                     if self.cfg.cir_sampling_frequency_hz is not None
                     else self.main.cfg.paths.subcarrier_spacing
                 )
-                self.export_cir_batch(
+                self.batch_cir_exporter = export_cir_batch(
+                    gui=self.main,
                     output_filename=self.cfg.cir_output_filename,
                     duration_s=self.cfg.cir_export_duration_s,
                     sampling_frequency_hz=sampling_frequency_hz,
