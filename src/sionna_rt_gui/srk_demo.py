@@ -410,14 +410,19 @@ class SrkDemo:
         """
         Simplified demo GUI.
         """
+        ui_scale = self.main.ui_scale
 
         # --- Controls window
         w = 375
-        psim.SetNextWindowSize((w, 255), psim.ImGuiCond_FirstUseEver)
-        psim.SetNextWindowPos((10, 10), psim.ImGuiCond_FirstUseEver)
+        psim.SetNextWindowSize(
+            (w * ui_scale, 255 * ui_scale), psim.ImGuiCond_FirstUseEver
+        )
+        psim.SetNextWindowPos(
+            (10 * ui_scale, 10 * ui_scale), psim.ImGuiCond_FirstUseEver
+        )
         psim.Begin("Sionna Research Kit", open=True)
 
-        bsize = ((w - 30) // 3, 30)
+        bsize = (ui_scale * (w - 30) // 3, 30 * ui_scale)
 
         if self.channel_client.is_connected():
             psim.NewLine()
@@ -432,7 +437,7 @@ class SrkDemo:
                 psim.PushStyleColor(psim.ImGuiCol_ButtonHovered, NVIDIA_GREEN_DARK)
                 psim.PushStyleColor(psim.ImGuiCol_ButtonActive, NVIDIA_GREEN_DARKER)
 
-            psim.SetCursorPosX(0.5 * bsize[0] + 15)
+            psim.SetCursorPosX((0.5 * bsize[0] + 15 * ui_scale))
             label = "NRX ON" if self.cfg.use_neural_receiver else "NRX OFF"
             if psim.Button(label, size=(2 * bsize[0], bsize[1])):
                 self.set_use_neural_receiver(not self.cfg.use_neural_receiver)
@@ -448,8 +453,8 @@ class SrkDemo:
             self.maybe_read_gpu_utilization()
             psim.Spacing()
             txt = f"GPU utilization: {self.gpu_utilization}%"
-            w, _ = psim.CalcTextSize(txt)
-            psim.SetCursorPosX(0.5 * (bsize[0] + w))
+            w_scaled, _ = psim.CalcTextSize(txt)
+            psim.SetCursorPosX(0.5 * (bsize[0] + w_scaled))
             psim.Text(txt)
 
         psim.NewLine()
@@ -492,7 +497,7 @@ class SrkDemo:
                     )
                 psim.EndDisabled()
 
-                psim.SetNextItemWidth(185)
+                psim.SetNextItemWidth(185 * ui_scale)
                 changed_offset, self.main.cfg.paths.snr_offset_db = psim.InputFloat(
                     "SNR offset (dB)",
                     self.main.cfg.paths.snr_offset_db,
@@ -504,7 +509,7 @@ class SrkDemo:
                         self.main.cfg.paths.snr_offset_db, -120.0, 10.0
                     )
 
-                psim.SetNextItemWidth(185)
+                psim.SetNextItemWidth(185 * ui_scale)
                 changed_max_noise, self.cfg.max_noise_std_db = psim.InputFloat(
                     "Max noise std (dB)",
                     self.cfg.max_noise_std_db,
@@ -544,11 +549,11 @@ class SrkDemo:
 
             # - CIR batch export
 
-            psim.SetNextItemWidth(185)
+            psim.SetNextItemWidth(185 * ui_scale)
             _, self.cfg.cir_output_filename = psim.InputText(
                 "Output filename", self.cfg.cir_output_filename
             )
-            psim.SetNextItemWidth(185)
+            psim.SetNextItemWidth(185 * ui_scale)
             _, self.cfg.cir_export_duration_s = psim.InputFloat(
                 "Export duration (s)", self.cfg.cir_export_duration_s
             )
@@ -577,7 +582,7 @@ class SrkDemo:
             psim.Spacing()
             is_connected = self.stats_client.is_connected()
 
-            psim.SetNextItemWidth(185)
+            psim.SetNextItemWidth(185 * ui_scale)
             _, self.cfg.stats_plotting_mode_i = psim.Combo(
                 "Plot stats##stats_plotting_mode",
                 self.cfg.stats_plotting_mode_i,
@@ -618,8 +623,10 @@ class SrkDemo:
             # Place window in the top-right corner of the screen
             window_resolution = ps.get_window_size()
             w = self.plots_size[0]
-            psim.SetNextWindowSize((w, self.plots_size[1]))
-            psim.SetNextWindowPos((window_resolution[0] - w - 10, 10))
+            psim.SetNextWindowSize((w * ui_scale, self.plots_size[1] * ui_scale))
+            psim.SetNextWindowPos(
+                (window_resolution[0] - (w + 10) * ui_scale, 10 * ui_scale)
+            )
 
             psim.Begin(
                 "CIR plot",
@@ -631,7 +638,7 @@ class SrkDemo:
 
             psplot.BeginPlot(
                 "Channel impulse response",
-                size=self.plots_size,
+                size=(self.plots_size[0] * ui_scale, self.plots_size[1] * ui_scale),
             )
             psplot.SetupLegend(
                 psplot.ImPlotLocation_NorthEast,
@@ -720,9 +727,12 @@ class SrkDemo:
             window_resolution = ps.get_window_size()
             w = self.plots_size[0]
             h = n_plots * self.plots_size[1]
-            psim.SetNextWindowSize((w, h))
+            psim.SetNextWindowSize((w * ui_scale, h * ui_scale))
             psim.SetNextWindowPos(
-                (window_resolution[0] - w - 10, window_resolution[1] - h - 10)
+                (
+                    window_resolution[0] - (w + 10) * ui_scale,
+                    window_resolution[1] - (h + 10) * ui_scale,
+                )
             )
 
             psim.Begin(
@@ -745,7 +755,10 @@ class SrkDemo:
                 plot_title + (" (fake data)" if has_fake_data else ""),
                 cols=1,
                 rows=n_plots,
-                size=(self.plots_size[0], n_plots * self.plots_size[1]),
+                size=(
+                    self.plots_size[0] * ui_scale,
+                    n_plots * self.plots_size[1] * ui_scale,
+                ),
                 flags=psplot.ImPlotSubplotFlags_LinkCols,
             )
 
@@ -811,11 +824,11 @@ class SrkDemo:
         # --- OSM credit window
         if self.cfg.osm_credit_string is not None:
             window_resolution = ps.get_window_size()
-            w, h = psim.CalcTextSize(self.cfg.osm_credit_string)
-            w += 15
-            h += 10
-            psim.SetNextWindowSize((w, h))
-            psim.SetNextWindowPos((0, window_resolution[1] - h))
+            w_scaled, h_scaled = psim.CalcTextSize(self.cfg.osm_credit_string)
+            w_scaled += 15 * ui_scale
+            h_scaled += 10 * ui_scale
+            psim.SetNextWindowSize((w_scaled, h_scaled))
+            psim.SetNextWindowPos((0, window_resolution[1] - h_scaled))
 
             psim.Begin(
                 "OSM credit",
@@ -823,8 +836,8 @@ class SrkDemo:
                 flags=self.plots_windows_flags,
             )
 
-            psim.SetCursorPosX(5)
-            psim.SetCursorPosY(5)
+            psim.SetCursorPosX(5 * ui_scale)
+            psim.SetCursorPosY(5 * ui_scale)
             psim.Text(self.cfg.osm_credit_string)
 
             psim.End()
