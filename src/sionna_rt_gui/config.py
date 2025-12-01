@@ -242,6 +242,10 @@ class SrkDemoConfig:
 
     # --- CIR batch export
     cir_output_filename: str = "cir_export.json"
+    # Index of the TX to export the CIRs for.
+    cir_export_tx_index: int = 0
+    # Index of the RX to export the CIRs for.
+    cir_export_rx_index: int = 0
     # TODO: automatically cover the whole trajectory duration when set to None?
     cir_export_duration_s: float = 0.1
     # Sampling frequency for the CIR batch export.

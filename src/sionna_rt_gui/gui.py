@@ -696,7 +696,7 @@ class SionnaRtGui:
             diffraction_lit_region=self.cfg.radio_map.diffraction_lit_region,
         )
 
-    def has_visible_radio_map(self) -> tuple[bool, ps.SurfaceMesh]:
+    def has_visible_radio_map(self) -> tuple[bool, ps.SurfaceMesh | None]:
         rm_struct = None
         if ps.has_surface_mesh("radio_map"):
             rm_struct = ps.get_surface_mesh("radio_map")
@@ -713,7 +713,6 @@ class SionnaRtGui:
         clear_first: bool = False,
         show: bool = True,
         force: bool = False,
-        num_interpolation_steps: int | None = None,
     ):
         # Optionally throttle path computations to reduce load
         current_time = time.time()
@@ -738,11 +737,7 @@ class SionnaRtGui:
                 l_min=self.cfg.paths.l_min,
                 l_max=self.cfg.paths.l_max,
                 sampling_frequency=self.cfg.paths.sampling_frequency,
-                num_time_steps=(
-                    num_interpolation_steps
-                    if num_interpolation_steps is not None
-                    else self.cfg.paths.num_time_steps
-                ),
+                num_time_steps=self.cfg.paths.num_time_steps,
                 normalize=self.cfg.paths.normalize,
                 normalize_delays=self.cfg.paths.normalize_delays,
                 out_type="numpy",

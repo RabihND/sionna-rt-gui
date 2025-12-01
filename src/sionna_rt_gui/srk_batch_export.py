@@ -16,12 +16,16 @@ class CirBatchExporter(Iterator[int]):
     def __init__(
         self,
         gui: "SionnaRtGui",
+        tx_index: int,
+        rx_index: int,
         output_filename: str,
         duration_s: float,
         sampling_frequency_hz: float,
         interpolation_factor: int,
     ):
         self.main = gui
+        self.tx_index = tx_index
+        self.rx_index = rx_index
         self.output_filename = output_filename
         self.duration_s = duration_s
         self.sampling_frequency_hz = sampling_frequency_hz
@@ -33,6 +37,8 @@ class CirBatchExporter(Iterator[int]):
             json.dump(
                 {
                     "batch": {
+                        "tx_index": tx_index,
+                        "rx_index": rx_index,
                         "sampling_frequency_hz": sampling_frequency_hz,
                         "interpolation_factor": interpolation_factor,
                         "n_cirs": n_cirs,
@@ -76,19 +82,31 @@ class CirBatchExporter(Iterator[int]):
             animation_tick(self.main, time_delta=self.time_delta, force=True)
 
             # Compute updated paths
-            # TODO: interpolate by the requested factor
-            self.main.update_paths(
-                clear_first=False,
-                show=False,
-                force=True,
-                num_interpolation_steps=self.interpolation_factor,
+            paths = self.main.compute_paths()
+            if paths is None:
+                # TODO: still need to write a CIR
+                raise NotImplementedError("No paths available")
+
+            paths_cfg = self.main.cfg.paths
+            paths_taps = paths.taps(
+                bandwidth=paths_cfg.bandwidth,
+                l_min=paths_cfg.l_min,
+                l_max=paths_cfg.l_max,
+                sampling_frequency=paths_cfg.sampling_frequency,
+                num_time_steps=self.interpolation_factor,
+                normalize=paths_cfg.normalize,
+                normalize_delays=paths_cfg.normalize_delays,
+                out_type="numpy",
             )
 
             taps_results = prepare_and_normalize_cir(
-                taps=self.main.paths_taps,
+                taps=paths_taps,
+                # TODO: adjust this if we manipulate which radio devices are part of the scene
+                tx_index=self.tx_index,
+                rx_index=self.rx_index,
                 num_taps=self.num_taps,
-                bandwidth=self.main.cfg.paths.bandwidth,
-                snr_offset_db=self.main.cfg.paths.snr_offset_db,
+                bandwidth=paths_cfg.bandwidth,
+                snr_offset_db=paths_cfg.snr_offset_db,
                 max_noise_std=self.main.cfg.srk_demo.max_noise_std,
                 as_arrays=True,
             )
@@ -145,14 +163,27 @@ class CirBatchExporter(Iterator[int]):
 
 def export_cir_batch(
     gui: "SionnaRtGui",
+    tx_index: int,
+    rx_index: int,
     output_filename: str,
     duration_s: float,
     sampling_frequency_hz: float,
     interpolation_factor: int,
-) -> CirBatchExporter:
+) -> CirBatchExporter | None:
+    if tx_index >= len(gui.scene._transmitters) or rx_index >= len(
+        gui.scene._receivers
+    ):
+        return None
+
     # We will advance animations manually.
     gui.set_all_animations_playing(False)
     # TODO: auto-cancel if there's no animation.
     return CirBatchExporter(
-        gui, output_filename, duration_s, sampling_frequency_hz, interpolation_factor
+        gui,
+        tx_index,
+        rx_index,
+        output_filename,
+        duration_s,
+        sampling_frequency_hz,
+        interpolation_factor,
     )

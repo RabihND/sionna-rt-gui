@@ -450,6 +450,8 @@ def compute_thermal_noise_power(
 
 def prepare_and_normalize_cir(
     taps: np.ndarray,
+    tx_index: int,
+    rx_index: int,
     num_taps: int,
     bandwidth: float,
     snr_offset_db: float,
@@ -458,7 +460,7 @@ def prepare_and_normalize_cir(
 ) -> dict:
     # Shape: [num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1]
     # TODO: should we make the tx/rx selection configurable?
-    taps = taps[0, 0, 0, 0, ...]
+    taps = taps[rx_index, 0, tx_index, 0, ...]
     num_time_steps = taps.shape[0]
     # Retain only the num_taps largest absolute taps
     tap_indices = np.argsort(np.abs(taps), axis=1)[:, ::-1][:, :num_taps]

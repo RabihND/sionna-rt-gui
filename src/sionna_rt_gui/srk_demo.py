@@ -488,6 +488,16 @@ class SrkDemo:
             psim.NewLine()
 
             # - CIR batch export
+            _, self.cfg.cir_export_tx_index = psim.Combo(
+                "From TX",
+                self.cfg.cir_export_tx_index,
+                items=[name for name in self.main.scene._transmitters.keys()],
+            )
+            _, self.cfg.cir_export_rx_index = psim.Combo(
+                "To RX",
+                self.cfg.cir_export_rx_index,
+                items=[name for name in self.main.scene._receivers.keys()],
+            )
 
             psim.SetNextItemWidth(185 * ui_scale)
             _, self.cfg.cir_output_filename = psim.InputText(
