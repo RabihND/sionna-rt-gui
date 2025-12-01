@@ -56,15 +56,18 @@ class Trajectory:
     def looping_mode(self) -> LoopingMode:
         return LoopingMode(self.looping_mode_i)
 
-    def current_position_and_direction(self) -> tuple[np.ndarray, np.ndarray] | None:
-        """Return the current world-space position based on the distance along the trajectory."""
+    def eval(
+        self, distance: float | np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """Return the world-space position and direction based on the given
+        distance along the trajectory."""
         n_points = len(self.points)
         if n_points == 0:
             return None
         if n_points == 1:
             return self.points[0], np.zeros(3)
 
-        safe_dist = np.clip(self.distance, 0.0, self.total_distance())
+        safe_dist = np.clip(distance, 0.0, self.total_distance())
         end_idx = np.searchsorted(self._cumulative_distances, safe_dist, side="left")
         start_idx = max(end_idx - 1, 0)
         if start_idx == end_idx:
@@ -78,6 +81,49 @@ class Trajectory:
         direction = self.points[end_idx] - self.points[start_idx]
         pos = self.points[start_idx] + t * direction
         return pos, direction / np.linalg.norm(direction)
+
+    def current_position_and_direction(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Return the current world-space position and direction based on the current
+        distance along the trajectory."""
+        return self.eval(self.distance)
+
+    def compute_next_distance(
+        self,
+        starting_distance: float | np.ndarray,
+        starting_backward: bool | np.ndarray,
+        time_delta: float | np.ndarray,
+        speed_multiplier: float = 1.0,
+    ) -> tuple[float | np.ndarray, bool | np.ndarray]:
+        """Compute the next distance along the trajectory based on the given time delta and speed multiplier.
+        Also returns the new `backwar` state."""
+        distance_delta = time_delta * speed_multiplier * self.velocity
+        total_distance = self.total_distance()
+        result = starting_distance + (-1 if self.backward else 1) * distance_delta
+        new_backward = starting_backward
+
+        is_below = result <= 0
+        is_above = result > total_distance
+
+        match self.looping_mode:
+            case LoopingMode.NoLoop:
+                result = np.where(
+                    is_below, 0.0, np.where(is_above, total_distance, result)
+                )
+            case LoopingMode.Mirror:
+                new_backward = np.where(
+                    is_below, False, np.where(is_above, True, new_backward)
+                )
+            case LoopingMode.Repeat:
+                result = np.where(
+                    is_below, total_distance, np.where(is_above, 0.0, result)
+                )
+            case _:
+                raise ValueError(f"Invalid looping mode: {self.looping_mode}")
+
+        # Protection in case of large single-frame jumps
+        result = np.clip(result, 0.0, total_distance)
+
+        return result, new_backward
 
     def add_point(self, point: np.ndarray | list[float]):
         point = np.array(point)
@@ -229,7 +275,11 @@ def animation_tick(gui: "SionnaRtGui", time_delta: float, force: bool = False):
     rx_changed = False
     for obj_name in gui.animation_config.trajectories.keys():
         obj, changed = animation_tick_single_object(
-            gui, obj_name, time_delta, force=force
+            gui,
+            obj_name,
+            time_delta,
+            speed_multiplier=cfg.speed_multiplier,
+            force=force,
         )
         if changed:
             if isinstance(obj, rt.Transmitter):
@@ -258,7 +308,11 @@ def animation_tick(gui: "SionnaRtGui", time_delta: float, force: bool = False):
 
 
 def animation_tick_single_object(
-    gui: "SionnaRtGui", obj_name: str, time_delta: float, force: bool = False
+    gui: "SionnaRtGui",
+    obj_name: str,
+    time_delta: float,
+    speed_multiplier: float = 1.0,
+    force: bool = False,
 ) -> tuple[rt.RadioDevice, bool]:
     traj = gui.animation_config.trajectories[obj_name]
 
@@ -271,38 +325,13 @@ def animation_tick_single_object(
     if obj is None:
         return None, False
 
-    distance_delta = time_delta * gui.animation_config.speed_multiplier * traj.velocity
-    total_distance = traj.total_distance()
-    traj.distance += (-1 if traj.backward else 1) * distance_delta
-
-    if traj.distance <= 0:
-        match traj.looping_mode:
-            case LoopingMode.NoLoop:
-                traj.distance = 0.0
-            case LoopingMode.Mirror:
-                traj.backward = False
-            case LoopingMode.Repeat:
-                traj.distance = total_distance
-            case _:
-                raise ValueError(f"Invalid looping mode: {traj.looping_mode}")
-    elif traj.distance > total_distance:
-        match traj.looping_mode:
-            case LoopingMode.NoLoop:
-                traj.distance = total_distance
-            case LoopingMode.Mirror:
-                traj.backward = True
-            case LoopingMode.Repeat:
-                traj.distance = 0.0
-            case _:
-                raise ValueError(f"Invalid looping mode: {traj.looping_mode}")
-
-    # Protection in case of large single-frame jumps
-    traj.distance = np.clip(traj.distance, 0.0, total_distance)
+    traj.distance, traj.backward = traj.compute_next_distance(
+        traj.distance, traj.backward, time_delta, speed_multiplier
+    )
 
     # Update the object position accordingly
-    obj = gui.scene.get(obj_name)
     obj.position, direction = traj.current_position_and_direction()
-    # Velocity for doppler
+    # Velocity for Doppler (independent of speed multiplier)
     obj.velocity = direction * traj.velocity
     dr.make_opaque(obj.position, obj.velocity)
 

@@ -456,10 +456,8 @@ def prepare_and_normalize_cir(
     bandwidth: float,
     snr_offset_db: float,
     max_noise_std: float,
-    as_arrays: bool = False,
 ) -> dict:
     # Shape: [num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1]
-    # TODO: should we make the tx/rx selection configurable?
     taps = taps[rx_index, 0, tx_index, 0, ...]
     num_time_steps = taps.shape[0]
     # Retain only the num_taps largest absolute taps
@@ -469,35 +467,23 @@ def prepare_and_normalize_cir(
     # Convert to real/imag compatible with the C complex type
     taps = np.reshape(np.stack([taps.real, taps.imag], axis=-1), [num_time_steps, -1])
 
-    # Thermal noise power (kTB) in Watts at 290 K
-    thermal_noise_power_w = compute_thermal_noise_power(bandwidth)
-    noise_std = float(np.sqrt(thermal_noise_power_w))
+    taps, norm, noise_std = _apply_noise_and_normalize(
+        taps, bandwidth, snr_offset_db, max_noise_std
+    )
 
-    # Normalize taps and compute scaling norm
-    norm = np.sqrt(np.sum(taps**2, axis=-1))
-    zero_norm = norm == 0
-    taps = np.where(zero_norm[:, None], taps, taps / norm[:, None])
-    noise_std = np.where(zero_norm, 0, noise_std / norm[:, None])
-
-    snr_offset_factor = 10 ** (-snr_offset_db / 20.0)
-    noise_std *= snr_offset_factor
-
-    taps = taps.astype(np.float32)
     tap_indices = tap_indices.astype(np.uint16)
-    noise_std = np.minimum(noise_std, max_noise_std).astype(np.float32)
 
-    if not as_arrays:
-        if num_time_steps == 1:
-            taps = taps[0]
-            tap_indices = tap_indices[0]
-            norm = float(norm[0])
-            noise_std = float(noise_std[0])
-        else:
-            norm = norm.tolist()
-            noise_std = noise_std.tolist()
+    if num_time_steps == 1:
+        taps = taps[0]
+        tap_indices = tap_indices[0]
+        norm = float(norm[0])
+        noise_std = float(noise_std[0])
+    else:
+        norm = norm.tolist()
+        noise_std = noise_std.tolist()
 
-        taps = taps.tolist()
-        tap_indices = tap_indices.tolist()
+    taps = taps.tolist()
+    tap_indices = tap_indices.tolist()
 
     return {
         "msg_type": "cir",
@@ -506,3 +492,60 @@ def prepare_and_normalize_cir(
         "taps_norm": norm,
         "noise_std": noise_std,
     }
+
+
+def prepare_and_normalize_cir_batch(
+    taps: np.ndarray,
+    tx_index: np.ndarray,
+    rx_index: np.ndarray,
+    num_taps: int,
+    bandwidth: float,
+    snr_offset_db: float,
+    max_noise_std: float,
+) -> dict:
+    # Shape: [num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1]
+    taps = taps[rx_index, 0, tx_index, 0, ...]
+    num_time_steps = taps.shape[-2]
+    # Retain only the num_taps largest absolute taps
+    tap_indices = np.argsort(np.abs(taps), axis=-1)[..., ::-1][..., :num_taps]
+    taps = np.take_along_axis(taps, tap_indices, axis=-1)
+
+    # Convert to real/imag compatible with the C complex type
+    taps = np.reshape(
+        np.stack([taps.real, taps.imag], axis=-1),
+        [len(rx_index), len(tx_index), num_time_steps, -1],
+    )
+
+    taps, norm, noise_std = _apply_noise_and_normalize(
+        taps, bandwidth, snr_offset_db, max_noise_std
+    )
+
+    return {
+        "msg_type": "cir",
+        "taps": taps,
+        "tap_indices": tap_indices.astype(np.uint16),
+        "taps_norm": norm,
+        "noise_std": noise_std,
+    }
+
+
+def _apply_noise_and_normalize(
+    taps: np.ndarray, bandwidth: float, snr_offset_db: float, max_noise_std: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # Thermal noise power (kTB) in Watts at 290 K
+    thermal_noise_power_w = compute_thermal_noise_power(bandwidth)
+    noise_std = float(np.sqrt(thermal_noise_power_w))
+
+    # Normalize taps and compute scaling norm
+    norm = np.sqrt(np.sum(taps**2, axis=-1))
+    zero_norm = norm == 0
+    taps = np.where(zero_norm[..., None], taps, taps / norm[..., None])
+    noise_std = np.where(zero_norm, 0, noise_std / norm[..., None])
+
+    snr_offset_factor = 10 ** (-snr_offset_db / 20.0)
+    noise_std *= snr_offset_factor
+
+    taps = taps.astype(np.float32)
+    noise_std = np.minimum(noise_std, max_noise_std).astype(np.float32)
+
+    return taps, norm, noise_std

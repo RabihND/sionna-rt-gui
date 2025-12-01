@@ -230,21 +230,6 @@ class SrkDemo:
         # Force redraw at the next frame
         gui.reset_accumulation_requested = True
 
-        # TODO: remove this
-        if True:
-            self.batch_cir_exporter = export_cir_batch(
-                self.main,
-                tx_index=self.cfg.cir_export_tx_index,
-                rx_index=self.cfg.cir_export_rx_index,
-                output_filename=self.cfg.cir_output_filename,
-                duration_s=self.cfg.cir_export_duration_s,
-                sampling_frequency_hz=(
-                    self.cfg.cir_sampling_frequency_hz
-                    or self.main.cfg.paths.subcarrier_spacing
-                ),
-                interpolation_factor=self.cfg.cir_export_interpolation_factor,
-            )
-
     # ------------------------
 
     def tick(self):
@@ -524,6 +509,7 @@ class SrkDemo:
                     duration_s=self.cfg.cir_export_duration_s,
                     sampling_frequency_hz=sampling_frequency_hz,
                     interpolation_factor=self.cfg.cir_export_interpolation_factor,
+                    parallelism=self.cfg.cir_export_parallelism,
                 )
 
             psim.NewLine()

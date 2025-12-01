@@ -247,7 +247,7 @@ class SrkDemoConfig:
     # Index of the RX to export the CIRs for.
     cir_export_rx_index: int = 0
     # TODO: automatically cover the whole trajectory duration when set to None?
-    cir_export_duration_s: float = 0.1
+    cir_export_duration_s: float = 10
     # Sampling frequency for the CIR batch export.
     # The total number of CIRs will be equal to:
     #     ceil(cir_export_duration_s * cir_sampling_frequency_hz)
@@ -257,7 +257,7 @@ class SrkDemoConfig:
     # the rest using Doppler.
     cir_export_interpolation_factor: int = 14
     # How many RX positions to export the CIRs for in parallel.
-    cir_export_parallelism: int = 16
+    cir_export_parallelism: int = 128
 
     # --- Stats server & display
     stats_host: str = "localhost"
