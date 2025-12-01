@@ -191,6 +191,8 @@ class ChannelEmulatorClient(SrkClientBase):
 
         message = prepare_and_normalize_cir(
             taps,
+            tx_index=0,
+            rx_index=0,
             num_taps=self.paths_cfg.num_taps,
             bandwidth=self.paths_cfg.bandwidth,
             snr_offset_db=self.paths_cfg.snr_offset_db,

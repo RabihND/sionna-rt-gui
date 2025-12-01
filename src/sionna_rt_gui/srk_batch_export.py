@@ -1,14 +1,17 @@
-import json
+from __future__ import annotations
+
+from contextlib import contextmanager
 from dataclasses import asdict
+import json
 import os
 from typing import Iterator
-
 
 import numpy as np
 import polyscope as ps
 import polyscope.imgui as psim
+from sionna import rt
 
-from .animation import animation_tick
+from .animation import animation_tick_single_object
 from .sionna_utils import prepare_and_normalize_cir
 
 
@@ -25,11 +28,15 @@ class CirBatchExporter(Iterator[int]):
     ):
         self.main = gui
         self.tx_index = tx_index
+        self.tx_name = list(gui.scene._transmitters.keys())[tx_index]
         self.rx_index = rx_index
+        self.rx_name = list(gui.scene._receivers.keys())[rx_index]
         self.output_filename = output_filename
         self.duration_s = duration_s
         self.sampling_frequency_hz = sampling_frequency_hz
         self.interpolation_factor = interpolation_factor
+
+        # TODO: create temporary UEs for parallelisation
 
         # Save all simulation parameters to a JSON file.
         n_cirs = int(np.ceil(duration_s * sampling_frequency_hz))
@@ -38,7 +45,9 @@ class CirBatchExporter(Iterator[int]):
                 {
                     "batch": {
                         "tx_index": tx_index,
+                        "tx_name": self.tx_name,
                         "rx_index": rx_index,
+                        "rx_name": self.rx_name,
                         "sampling_frequency_hz": sampling_frequency_hz,
                         "interpolation_factor": interpolation_factor,
                         "n_cirs": n_cirs,
@@ -78,38 +87,44 @@ class CirBatchExporter(Iterator[int]):
 
         mode = "ab" if self.cir_i > 0 else "wb"
         with open(self.output_bin_fname, mode) as f:
-            # Advance animation
-            animation_tick(self.main, time_delta=self.time_delta, force=True)
+            with replace_radio_devices(self.main.scene, self.tx_index, self.rx_index):
+                # Advance animation
+                # TODO: advance animation for all instances of the RX (parallelization)
+                for name in (self.tx_name, self.rx_name):
+                    animation_tick_single_object(
+                        self.main, name, time_delta=self.time_delta, force=True
+                    )
 
-            # Compute updated paths
-            paths = self.main.compute_paths()
-            if paths is None:
-                # TODO: still need to write a CIR
-                raise NotImplementedError("No paths available")
+                # Compute updated paths
+                paths = self.main.compute_paths()
+                if paths is None:
+                    # TODO: still need to write a CIR
+                    raise NotImplementedError("No paths available")
 
-            paths_cfg = self.main.cfg.paths
-            paths_taps = paths.taps(
-                bandwidth=paths_cfg.bandwidth,
-                l_min=paths_cfg.l_min,
-                l_max=paths_cfg.l_max,
-                sampling_frequency=paths_cfg.sampling_frequency,
-                num_time_steps=self.interpolation_factor,
-                normalize=paths_cfg.normalize,
-                normalize_delays=paths_cfg.normalize_delays,
-                out_type="numpy",
-            )
+                paths_cfg = self.main.cfg.paths
+                paths_taps = paths.taps(
+                    bandwidth=paths_cfg.bandwidth,
+                    l_min=paths_cfg.l_min,
+                    l_max=paths_cfg.l_max,
+                    sampling_frequency=paths_cfg.sampling_frequency,
+                    num_time_steps=self.interpolation_factor,
+                    normalize=paths_cfg.normalize,
+                    normalize_delays=paths_cfg.normalize_delays,
+                    out_type="numpy",
+                )
 
-            taps_results = prepare_and_normalize_cir(
-                taps=paths_taps,
-                # TODO: adjust this if we manipulate which radio devices are part of the scene
-                tx_index=self.tx_index,
-                rx_index=self.rx_index,
-                num_taps=self.num_taps,
-                bandwidth=paths_cfg.bandwidth,
-                snr_offset_db=paths_cfg.snr_offset_db,
-                max_noise_std=self.main.cfg.srk_demo.max_noise_std,
-                as_arrays=True,
-            )
+                taps_results = prepare_and_normalize_cir(
+                    taps=paths_taps,
+                    # TODO: adjust this if we manipulate which radio devices are part of the scene
+                    tx_index=self.tx_index,
+                    rx_index=self.rx_index,
+                    num_taps=self.num_taps,
+                    bandwidth=paths_cfg.bandwidth,
+                    snr_offset_db=paths_cfg.snr_offset_db,
+                    max_noise_std=self.main.cfg.srk_demo.max_noise_std,
+                    as_arrays=True,
+                )
+
             taps_norm = taps_results["taps_norm"]
             taps = taps_results["taps"]
             assert taps_norm.shape == (self.interpolation_factor,)
@@ -161,6 +176,23 @@ class CirBatchExporter(Iterator[int]):
         psim.End()
 
 
+@contextmanager
+def replace_radio_devices(scene: rt.Scene, tx_index: int, rx_index: int):
+    tx_bak = scene.transmitters.copy()
+    rx_bak = scene.receivers.copy()
+    scene._transmitters = {
+        tx_bak[k].name: tx_bak[k] for i, k in enumerate(tx_bak.keys()) if i == tx_index
+    }
+    scene._receivers = {
+        rx_bak[k].name: rx_bak[k] for i, k in enumerate(rx_bak.keys()) if i == rx_index
+    }
+
+    yield
+
+    scene._transmitters = tx_bak
+    scene._receivers = rx_bak
+
+
 def export_cir_batch(
     gui: "SionnaRtGui",
     tx_index: int,
@@ -177,6 +209,9 @@ def export_cir_batch(
 
     # We will advance animations manually.
     gui.set_all_animations_playing(False)
+    gui.cfg.paths.auto_update = False
+    gui.cfg.radio_map.auto_update = False
+
     # TODO: auto-cancel if there's no animation.
     return CirBatchExporter(
         gui,

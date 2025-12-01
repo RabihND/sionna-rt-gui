@@ -227,50 +227,15 @@ def animation_tick(gui: "SionnaRtGui", time_delta: float, force: bool = False):
 
     tx_changed = False
     rx_changed = False
-    for obj_name, traj in gui.animation_config.trajectories.items():
-        if not traj.enabled and not force:
-            continue
-        if len(traj) == 0:
-            continue
-
-        distance_delta = time_delta * cfg.speed_multiplier * traj.velocity
-        total_distance = traj.total_distance()
-        traj.distance += (-1 if traj.backward else 1) * distance_delta
-
-        if traj.distance <= 0:
-            match traj.looping_mode:
-                case LoopingMode.NoLoop:
-                    traj.distance = 0.0
-                case LoopingMode.Mirror:
-                    traj.backward = False
-                case LoopingMode.Repeat:
-                    traj.distance = total_distance
-                case _:
-                    raise ValueError(f"Invalid looping mode: {traj.looping_mode}")
-        elif traj.distance > total_distance:
-            match traj.looping_mode:
-                case LoopingMode.NoLoop:
-                    traj.distance = total_distance
-                case LoopingMode.Mirror:
-                    traj.backward = True
-                case LoopingMode.Repeat:
-                    traj.distance = 0.0
-                case _:
-                    raise ValueError(f"Invalid looping mode: {traj.looping_mode}")
-
-        # Protection in case of large single-frame jumps
-        traj.distance = np.clip(traj.distance, 0.0, total_distance)
-
-        # Update the object position accordingly
-        obj = gui.scene.get(obj_name)
-        obj.position, direction = traj.current_position_and_direction()
-        # Velocity for doppler
-        obj.velocity = direction * traj.velocity
-        dr.make_opaque(obj.position, obj.velocity)
-        if isinstance(obj, rt.Transmitter):
-            tx_changed = True
-        elif isinstance(obj, rt.Receiver):
-            rx_changed = True
+    for obj_name in gui.animation_config.trajectories.keys():
+        obj, changed = animation_tick_single_object(
+            gui, obj_name, time_delta, force=force
+        )
+        if changed:
+            if isinstance(obj, rt.Transmitter):
+                tx_changed = True
+            elif isinstance(obj, rt.Receiver):
+                rx_changed = True
 
     if tx_changed or rx_changed:
         if tx_changed:
@@ -290,3 +255,55 @@ def animation_tick(gui: "SionnaRtGui", time_delta: float, force: bool = False):
 
         if gui.cfg.paths.auto_update:
             gui.update_paths(show=True)
+
+
+def animation_tick_single_object(
+    gui: "SionnaRtGui", obj_name: str, time_delta: float, force: bool = False
+) -> tuple[rt.RadioDevice, bool]:
+    traj = gui.animation_config.trajectories[obj_name]
+
+    if not traj.enabled and not force:
+        return None, False
+    if len(traj) == 0:
+        return None, False
+
+    obj = gui.scene.get(obj_name)
+    if obj is None:
+        return None, False
+
+    distance_delta = time_delta * gui.animation_config.speed_multiplier * traj.velocity
+    total_distance = traj.total_distance()
+    traj.distance += (-1 if traj.backward else 1) * distance_delta
+
+    if traj.distance <= 0:
+        match traj.looping_mode:
+            case LoopingMode.NoLoop:
+                traj.distance = 0.0
+            case LoopingMode.Mirror:
+                traj.backward = False
+            case LoopingMode.Repeat:
+                traj.distance = total_distance
+            case _:
+                raise ValueError(f"Invalid looping mode: {traj.looping_mode}")
+    elif traj.distance > total_distance:
+        match traj.looping_mode:
+            case LoopingMode.NoLoop:
+                traj.distance = total_distance
+            case LoopingMode.Mirror:
+                traj.backward = True
+            case LoopingMode.Repeat:
+                traj.distance = 0.0
+            case _:
+                raise ValueError(f"Invalid looping mode: {traj.looping_mode}")
+
+    # Protection in case of large single-frame jumps
+    traj.distance = np.clip(traj.distance, 0.0, total_distance)
+
+    # Update the object position accordingly
+    obj = gui.scene.get(obj_name)
+    obj.position, direction = traj.current_position_and_direction()
+    # Velocity for doppler
+    obj.velocity = direction * traj.velocity
+    dr.make_opaque(obj.position, obj.velocity)
+
+    return obj, True

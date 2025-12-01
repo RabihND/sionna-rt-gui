@@ -256,6 +256,8 @@ class SrkDemoConfig:
     # Compute one true CIR every `cir_export_interpolation_factor` time steps, and interpolate
     # the rest using Doppler.
     cir_export_interpolation_factor: int = 14
+    # How many RX positions to export the CIRs for in parallel.
+    cir_export_parallelism: int = 16
 
     # --- Stats server & display
     stats_host: str = "localhost"
