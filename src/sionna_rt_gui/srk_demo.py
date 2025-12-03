@@ -255,7 +255,7 @@ class SrkDemo:
 
             if (self.main.paths_taps is not None) and self.cfg.cir_send_updates:
                 self.channel_client.maybe_send_cir(
-                    self.main.paths_taps, self.main.paths_changed_timestamp
+                    self.main.paths_taps, self.main._last_paths_update_time
                 )
 
         # Update received stats
@@ -448,7 +448,7 @@ class SrkDemo:
 
                 if changed_offset or changed_max_noise:
                     # Trigger re-send of the CIR
-                    self.main.paths_changed_timestamp = time.time()
+                    self.main._last_paths_update_time = time.time()
 
                 psim.Spacing()
                 _, self.cfg.cir_send_updates = psim.Checkbox(

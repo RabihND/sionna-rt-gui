@@ -319,9 +319,9 @@ class GuiConfig:
     create_example_scenario: bool = False
 
     # If set, override the radio materials' thickness property
-    radio_material_thickness: float | None = None
+    radio_material_thickness: float | None = 10.0
     # If set, override the radio materials' scattering coefficient property
-    radio_material_scattering_coefficient: float | None = None
+    radio_material_scattering_coefficient: float | None = 0.2
 
     # Antenna arrays
     tx_array: AntennaArrayConfig = field(default_factory=AntennaArrayConfig)
