@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
+#
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
 """
 ZeroMQ server for sending configuration and receiving CIR data.
 """
 import argparse
 import logging
+import os
+import sys
 
 import numpy as np
 import zmq
 
-from common import add_project_root_to_path
 
-add_project_root_to_path()
+def add_project_root_to_path():
+    lib_path = os.path.join(os.path.dirname(__file__), "..", "src")
+    if lib_path not in sys.path:
+        sys.path.append(lib_path)
+
+
+if __name__ == "__main__":
+    add_project_root_to_path()
 
 from sionna_rt_gui.srk_demo import SrkDemoConfig
 

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+#
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
 """
 ZeroMQ Client for receiving UE statistics from a server.
 Subscribes to UE stats data published by the server at regular intervals.
@@ -6,12 +10,20 @@ Subscribes to UE stats data published by the server at regular intervals.
 
 import argparse
 import logging
-from typing import Optional
+import os
+import sys
 import time
+from typing import Optional
 
-from common import add_project_root_to_path
 
-add_project_root_to_path()
+def add_project_root_to_path():
+    lib_path = os.path.join(os.path.dirname(__file__), "..", "src")
+    if lib_path not in sys.path:
+        sys.path.append(lib_path)
+
+
+if __name__ == "__main__":
+    add_project_root_to_path()
 
 from sionna_rt_gui.srk_demo import SrkDemoConfig
 from sionna_rt_gui.srk_stats_client import UEStatsSubscriber, ReceiveResult
