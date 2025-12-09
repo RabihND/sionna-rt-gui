@@ -342,7 +342,7 @@ class SrkDemo:
         # --- Controls window
         w = 375
         psim.SetNextWindowSize(
-            (w * ui_scale, 255 * ui_scale), psim.ImGuiCond_FirstUseEver
+            (w * ui_scale, 270 * ui_scale), psim.ImGuiCond_FirstUseEver
         )
         psim.SetNextWindowPos(
             (10 * ui_scale, 10 * ui_scale), psim.ImGuiCond_FirstUseEver
