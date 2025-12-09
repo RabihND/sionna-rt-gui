@@ -515,6 +515,9 @@ def prepare_and_normalize_cir_batch(
         np.stack([taps.real, taps.imag], axis=-1),
         [len(rx_index), len(tx_index), num_time_steps, -1],
     )
+    tap_indices = tap_indices.reshape(
+        len(rx_index), len(tx_index), num_time_steps, num_taps
+    )
 
     taps, norm, noise_std = _apply_noise_and_normalize(
         taps, bandwidth, snr_offset_db, max_noise_std

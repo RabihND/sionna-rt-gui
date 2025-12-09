@@ -145,8 +145,10 @@ class CirBatchExporter(Iterator[int]):
 
         taps_norm = taps_results["taps_norm"]
         taps = taps_results["taps"]
+        tap_indices = taps_results["tap_indices"]
         assert taps_norm.dtype == np.float32
         assert taps.dtype == np.float32
+        assert tap_indices.dtype == np.uint16
 
         assert taps_norm.shape == (
             len(rx_instances),
@@ -159,23 +161,34 @@ class CirBatchExporter(Iterator[int]):
             self.interpolation_factor,
             self.num_taps * 2,
         ), taps.shape
+        assert tap_indices.shape == (
+            len(rx_instances),
+            len(tx_instances),
+            self.interpolation_factor,
+            self.num_taps,
+        ), tap_indices.shape
         # Reshape (linearize) for convenience when writing out below.
         taps_norm = taps_norm.ravel()
         taps = taps.reshape(-1, self.num_taps * 2)
+        tap_indices = tap_indices.reshape(-1, self.num_taps)
 
         # Strictly respect the CIR count even if not a multiple of the interpolation factor.
         # TODO: double-check this in the presence of parallelism
         if self.cir_i + taps_norm.shape[0] >= self.n_cirs:
             taps_norm = taps_norm[: self.n_cirs - self.cir_i]
             taps = taps[: self.n_cirs - self.cir_i, :]
+            tap_indices = tap_indices[: self.n_cirs - self.cir_i, :]
 
         mode = "ab" if self.cir_i > 0 else "wb"
         with open(self.output_bin_fname, mode) as f:
             # For each CIR (including the interpolated ones), write:
-            #     norm, tap0_real, tap0_imag, tap1_real, tap1_imag, ..., tapN_real, tapN_imag
+            #     norm,
+            #     tap0_real, tap0_imag, tap1_real, tap1_imag, ..., tapN_real, tapN_imag,
+            #     tap0_index, tap1_index, ..., tapN_index
             for k in range(taps.shape[0]):
                 f.write(taps_norm[k].tobytes())
                 f.write(taps[k, :].tobytes())
+                f.write(tap_indices[k, :].tobytes())
                 self.n_cirs_written += 1
 
         self.cir_i += self.interpolation_factor * self.parallelism
