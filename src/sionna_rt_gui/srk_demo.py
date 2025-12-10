@@ -443,8 +443,6 @@ class SrkDemo:
                     format="%.2f",
                     flags=psim.ImGuiInputTextFlags_EnterReturnsTrue,
                 )
-                if changed_max_noise:
-                    self.cfg.max_noise_std = 10 ** (self.cfg.max_noise_std_db / 10.0)
 
                 if changed_offset or changed_max_noise:
                     # Trigger re-send of the CIR

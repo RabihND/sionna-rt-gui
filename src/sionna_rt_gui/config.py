@@ -238,7 +238,6 @@ class SrkDemoConfig:
     cir_max_delay_to_plot_ns: float | None = 1500
     # Maximum noise std value to send to the server.
     max_noise_std_db: float = -4.0
-    max_noise_std = 10 ** (max_noise_std_db / 10.0)
 
     # --- CIR batch export
     cir_output_filename: str = "cir_export.json"
@@ -281,6 +280,10 @@ class SrkDemoConfig:
     show_gpu_utilization: bool = True
     gpu_utilization_interval_s: float = 0.5
     osm_credit_string: str | None = "Map data from OpenStreetMap"
+
+    @property
+    def max_noise_std(self):
+        return 10.0 ** (self.max_noise_std_db / 10.0)
 
 
 class GuiMode(Enum):

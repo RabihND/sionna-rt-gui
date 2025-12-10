@@ -54,6 +54,14 @@ class CirBatchExporter(Iterator[int]):
         with open(output_filename, "w") as f:
             json.dump(
                 {
+                    "channel_emulation": {
+                        "num_taps": gui.cfg.paths.num_taps,
+                        "num_cirs": self.n_cirs,
+                        "sigma_scaling": np.power(
+                            10.0, -gui.cfg.paths.snr_offset_db / 20
+                        ),
+                        "sigma_max": gui.cfg.srk_demo.max_noise_std,
+                    },
                     "batch": {
                         "tx_index": tx_index,
                         "rx_index": rx_index,
