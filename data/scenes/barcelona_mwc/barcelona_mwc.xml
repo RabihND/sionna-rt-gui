@@ -1,0 +1,73 @@
+<scene version="2.1.0">
+
+<!-- Materials -->
+
+	<bsdf type="itu-radio-material" id="mat-walls-ground" name="mat-walls-ground">
+		<string name="type" value="concrete"/>
+		<!-- <rgb value="0.824613 0.753683 0.795249" name="color"/> -->
+		<!-- <rgb value="0.824613, 0.753683, 0.795249" name="color"/> -->
+	</bsdf>
+	<bsdf type="itu-radio-material" id="mat-roads" name="mat-roads">
+		<string name="type" value="concrete"/>
+		<rgb value="0.4 0.4 0.4" name="reflectance"/>
+	</bsdf>
+	<bsdf type="itu-radio-material" id="mat-water" name="mat-water">
+		<string name="type" value="wet_ground"/>
+		<rgb value="0.3 0.3 0.8" name="reflectance"/>
+	</bsdf>
+	<bsdf type="itu-radio-material" id="mat-vegetation" name="mat-vegetation">
+		<string name="type" value="medium_dry_ground"/>
+		<rgb value="0.217 0.448 0.215" name="reflectance"/>
+	</bsdf>
+	<bsdf type="itu-radio-material" id="mat-forest" name="mat-forest">
+		<string name="type" value="wood"/>
+		<rgb value="0.12 0.308 0.107" name="reflectance"/>
+	</bsdf>
+	<bsdf type="itu-radio-material" id="mat-roof" name="mat-roof">
+		<string name="type" value="metal"/>
+		<rgb value="0.390, 0.350, 0.310" name="reflectance"/>
+	</bsdf>
+
+<!-- Emitters -->
+
+
+<!-- Shapes -->
+
+	<shape type="ply" id="elm__2" name="elm__2">
+		<string name="filename" value="meshes/ground.ply"/>
+		<boolean name="face_normals" value="true"/>
+		<ref id="mat-walls-ground" name="bsdf"/>
+	</shape>
+	<shape type="ply" id="elm__5" name="elm__5">
+		<string name="filename" value="meshes/map_osm_roads.ply"/>
+		<ref id="mat-roads" name="bsdf"/>
+	</shape>
+	<shape type="ply" id="elm__7" name="elm__7">
+		<string name="filename" value="meshes/map_osm_water.ply"/>
+		<boolean name="face_normals" value="true"/>
+		<ref id="mat-water" name="bsdf"/>
+	</shape>
+	<shape type="ply" id="elm__4" name="elm__4">
+		<string name="filename" value="meshes/map_osm_vegetation.ply"/>
+		<boolean name="face_normals" value="true"/>
+		<ref id="mat-vegetation" name="bsdf"/>
+	</shape>
+	<shape type="ply" id="elm__9" name="elm__9">
+		<string name="filename" value="meshes/map_osm_forest.ply"/>
+		<boolean name="face_normals" value="true"/>
+		<ref id="mat-forest" name="bsdf"/>
+	</shape>
+	<shape type="ply" id="elm__11" name="elm__11">
+		<string name="filename" value="meshes/map_osm_buildings-itu_concrete.ply"/>
+		<boolean name="face_normals" value="true"/>
+		<ref id="mat-walls-ground" name="bsdf"/>
+	</shape>
+	<shape type="ply" id="elm__12" name="elm__12">
+		<string name="filename" value="meshes/map_osm_buildings-itu_metal.ply"/>
+		<boolean name="face_normals" value="true"/>
+		<ref id="mat-roof" name="bsdf"/>
+	</shape>
+
+<!-- Volumes -->
+
+</scene>
