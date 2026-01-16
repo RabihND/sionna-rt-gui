@@ -27,7 +27,10 @@
 		<string name="type" value="metal"/>
 		<rgb value="0.390, 0.350, 0.310" name="reflectance"/>
 	</bsdf>
-
+	<bsdf type="itu-radio-material" id="mat-red-walls" name="mat-red-walls">
+		<string name="type" value="brick"/>
+		<rgb value="0.431797 0.195031 0.196659" name="reflectance"/>
+	</bsdf>
 <!-- Emitters -->
 
 
@@ -66,6 +69,11 @@
 		<string name="filename" value="meshes/map_osm_buildings-itu_metal.ply"/>
 		<boolean name="face_normals" value="true"/>
 		<ref id="mat-roof" name="bsdf"/>
+	</shape>
+	<shape type="ply" id="elm__14" name="elm__14">
+		<string name="filename" value="meshes/map_osm_buildings-itu_brick.ply"/>
+		<boolean name="face_normals" value="true"/>
+		<ref id="mat-red-walls" name="bsdf"/>
 	</shape>
 
 <!-- Volumes -->
