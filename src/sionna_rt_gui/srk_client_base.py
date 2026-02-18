@@ -76,7 +76,7 @@ class SrkClientBase:
             self.socket.connect(server_url)
 
             self.log.info(
-                f"Connected to {self.name} server at {server_url} (topic: {topic})"
+                f"Listening to {self.name} server at {server_url} (topic: {topic})"
             )
             return True
 

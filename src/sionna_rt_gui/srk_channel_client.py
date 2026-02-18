@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Callable
 import time
 
 import numpy as np
@@ -145,6 +146,70 @@ class ChannelEmulatorClient(SrkClientBase):
             timestamp,
             skip_throttle,
         )
+
+    # ------------------------
+
+    def connect_and_receive_config_blocking(
+        self,
+        server_host: str,
+        server_port: int,
+        retries: int = 5,
+        retry_delay_s: float = 2.0,
+        config_wait_s: float = 5.0,
+        process_config: Callable[[dict], None] = (lambda config: None),
+    ) -> bool:
+        """
+        Attempt connecting to the channel server and actually requesting a channel config.
+        Retry several times and wait between attempts.
+
+        """
+
+        channel_connected = False
+        for attempt in range(retries):
+            if not self.connect(
+                server_host=server_host,
+                server_port=server_port,
+            ):
+                if attempt < retries - 1:
+                    self.log.info(
+                        "Channel server not ready, retrying in %.0f s (attempt %d/%d) at %s:%s",
+                        retry_delay_s,
+                        attempt + 2,
+                        retries,
+                        server_host,
+                        server_port,
+                    )
+                    time.sleep(retry_delay_s)
+                continue
+            # Give the ZMQ connection time to establish before first request (connect is non-blocking).
+            time.sleep(1.0)
+            self.request_config()
+            # Verify connection by waiting for config response (avoids "connected but first request times out").
+            deadline = time.time() + config_wait_s
+            while time.time() < deadline:
+                self.tick()
+                config = self.pop_received_config()
+                if config is not None:
+                    process_config(config)
+                    channel_connected = True
+                    break
+                time.sleep(0.05)
+            if channel_connected:
+                break
+            self.log.info(
+                "Channel server did not respond to config request within %.0f s, reconnecting (attempt %d/%d).",
+                config_wait_s,
+                attempt + 2,
+                retries,
+            )
+            self.disconnect()
+            if attempt < retries - 1:
+                time.sleep(retry_delay_s)
+        if not channel_connected:
+            self.log.error(
+                f"Failed to connect to channel server ({server_host}:{server_port})."
+                " Click the 'Connect' button to try again."
+            )
 
     # ------------------------
 
