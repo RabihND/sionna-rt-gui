@@ -36,3 +36,6 @@ imgui.ini
 
 # Tests: data files
 test/*.npz
+
+# VSCode
+.vscode/
