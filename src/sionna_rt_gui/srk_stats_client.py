@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, Any
 
+import numpy as np
 import zmq
 
 from .srk_client_base import SrkClientBase, ReceiveResult
@@ -47,6 +48,12 @@ STATS_FIELDS_RANGES = {
     "goodput_down": (0, 30),
 }
 
+
+STATS_BASELINES_FIELDS_MAPPING = {
+    "t_s": "timestamp",
+    "mcs_index": "mcs",
+    "bler": "bler",
+    "goodput_mbps": "goodput",
 }
 
 
@@ -106,3 +113,17 @@ class UEStatsSubscriber(SrkClientBase):
             )
 
         print("---")
+
+
+def load_stats_baselines(filename: str, source: str) -> dict[str, np.ndarray]:
+    result = np.load(filename, allow_pickle=True).item()
+
+    # Keep only the fields from one source (OAI / OLLA / SALAD) and rename the fields to match
+    # our internal stats field names.
+    result = {
+        STATS_BASELINES_FIELDS_MAPPING[k]: v
+        for k, v in result["avg_timelines"][source].items()
+    }
+    # Convert timestamps to milliseconds for consistency with the live stats.
+    result["timestamp"] *= 1000
+    return result

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import logging
+import os
 import time
 
 import numpy as np
@@ -10,6 +11,7 @@ import polyscope as ps
 import polyscope.imgui as psim
 import polyscope.implot as psplot
 
+from . import PROJECT_DIR
 from .animation import LoopingMode, animation_tick
 from .drjit_util import read_gpu_utilization
 from .config import (
@@ -27,6 +29,7 @@ from .srk_stats_client import (
     STATS_FIELDS_NAMES,
     STATS_FIELDS_RANGES,
     ReceiveResult as StatsStatus,
+    load_stats_baselines,
 )
 from .srk_channel_client import ChannelEmulatorClient
 
@@ -65,6 +68,18 @@ class SrkDemo:
                 columns=["ue_id", "is_fake"] + list(STATS_FIELDS_NAMES)
             )
         )
+        self.stats_baselines: dict[str, np.ndarray] | None = None
+        if self.cfg.stats_baselines_npy is not None:
+            fname = os.path.realpath(
+                os.path.join(PROJECT_DIR, self.cfg.stats_baselines_npy)
+            )
+            self.stats_baselines = load_stats_baselines(
+                fname, self.cfg.stats_baselines_source
+            )
+            print(f"[i] Loaded stats baselines from {fname}")
+        # This timestamp will be used to align the live stats with the baseline stats.
+        # It will be reset when restarting the demo / animation.
+        self.stats_baselines_reference_timestamp: float | None = None
 
         # Try connecting to the channel and stats servers.
         # Connection failure is handled, the user can try again by clicking the "Connect" button.
@@ -96,6 +111,7 @@ class SrkDemo:
         Connections are kept intact.
         """
         self.stats_history.clear()
+        self.stats_baselines_reference_timestamp = None
         self.cir_plot_vlims = [(np.inf, -np.inf), (np.inf, -np.inf)]
 
     # ------------------------
@@ -297,7 +313,7 @@ class SrkDemo:
 
     def process_ue_stats(self, ue_stats: dict):
         # For each UE in the stats, add a row to the history
-        for new_stats in ue_stats["UE_stats"]:
+        for i, new_stats in enumerate(ue_stats["UE_stats"]):
             ue_id = new_stats["ue_id"]
             stats_i = self.stats_history[ue_id]
 
@@ -314,6 +330,16 @@ class SrkDemo:
             stats_i = stats_i.sort_values(by=["timestamp", "ue_id"])
 
             self.stats_history[ue_id] = stats_i
+
+            # This is the first live stats entry we have received since
+            # the animation / demo was started. Let's use its timestamp
+            # to align the baseline stats with the live stats.
+            if (
+                (i == 0)
+                and self.main.animation_config.playing
+                and (self.stats_baselines_reference_timestamp is None)
+            ):
+                self.stats_baselines_reference_timestamp = ue_stats["timestamp"]
 
     # ------------------------
 
@@ -747,19 +773,58 @@ class SrkDemo:
                 )
 
                 # TODO: better color choice or different line styles
+                call_i = 0
                 for selected_ue in ue_ids:
                     for direction, dir_label in directions:
+                        if call_i == 0:
+                            psplot.PushStyleColor(
+                                psplot.ImPlotCol_MarkerFill, NVIDIA_GREEN_DARK
+                            )
+                            psplot.PushStyleColor(
+                                psplot.ImPlotCol_Line, NVIDIA_GREEN_DARK
+                            )
+                            psplot.PushStyleVar(
+                                psplot.ImPlotStyleVar_LineWeight, 3.0 * ui_scale
+                            )
+
                         ue_stats = self.stats_history[selected_ue]
                         timestamps = (
                             ue_stats["timestamp"] - ue_stats["timestamp"].max()
                         ) / 1000
                         psplot.PlotLine(
                             f"{selected_ue} ({dir_label})",
-                            timestamps.astype(np.float64),
+                            timestamps.values.astype(np.float64),
                             ue_stats[f"{field_name}_{direction}"].values.astype(
                                 np.float64
                             ),
                         )
+
+                        if call_i == 0:
+                            psplot.PopStyleColor()
+                            psplot.PopStyleColor()
+                            psplot.PopStyleVar()
+
+                        call_i += 1
+
+                if (self.stats_baselines is not None) and (
+                    self.stats_baselines_reference_timestamp is not None
+                ):
+                    baseline_stats = self.stats_baselines[field_name]
+                    timestamps = self.stats_baselines["timestamp"]
+                    # Align the references' timestamps with the live stats
+                    timestamps = timestamps - timestamps[0]
+                    # Reuse the last UE's max timestamp to make time progress
+                    current_time_ref = (
+                        ue_stats["timestamp"].max()
+                        - self.stats_baselines_reference_timestamp
+                    )
+                    timestamps = (timestamps - current_time_ref) / 1000
+                    # TODO: preserve existing x axis limits for this call
+                    psplot.PlotLine(
+                        "Baseline",
+                        timestamps.astype(np.float64),
+                        baseline_stats.astype(np.float64),
+                    )
 
                 psplot.EndPlot()
 

@@ -268,6 +268,8 @@ class SrkDemoConfig:
     stats_to_plot: list[str] = field(
         default_factory=lambda: ["mcs", "bler", "num_prbs"]
     )
+    stats_baselines_npy: str | None = None
+    stats_baselines_source: str = "OAI"
 
     # --- Neural receiver
     use_neural_receiver: bool = False
