@@ -390,10 +390,9 @@ class SrkDemo:
 
         bsize = (ui_scale * (w - 30) // 3, 30 * ui_scale)
 
+        psim.NewLine()
         if self.channel_client.is_connected():
-            psim.NewLine()
-
-            # Prominent button for the channel emulator
+            # Prominent button for the NRX ON / OFF button
             has_nrx_req_pending = self.channel_client.has_pending_nrx_request()
             highlight_button = not has_nrx_req_pending and self.cfg.use_neural_receiver
             psim.BeginDisabled(has_nrx_req_pending)
@@ -414,6 +413,7 @@ class SrkDemo:
                 psim.PopStyleColor()
                 psim.PopStyleColor()
             psim.EndDisabled()
+            psim.NewLine()
 
         if self.cfg.show_gpu_utilization:
             self.maybe_read_gpu_utilization()
@@ -423,13 +423,11 @@ class SrkDemo:
             psim.SetCursorPosX(0.5 * (bsize[0] + w_scaled))
             psim.Text(txt)
 
-        psim.NewLine()
         if psim.Button("Play##srk", size=bsize):
             self.main.set_all_animations_playing(True)
         psim.SameLine()
         if psim.Button("Pause##srk", size=bsize):
             self.main.set_all_animations_playing(False)
-
         psim.SameLine()
         if psim.Button("Reset##srk", size=bsize):
             self.setup_demo_scenario()
@@ -447,9 +445,8 @@ class SrkDemo:
                     psim.BeginDisabled(True)
                     psim.Button("Config pending...")
                     psim.EndDisabled()
-                else:
-                    if psim.Button("Request config##channel"):
-                        self.channel_client.request_config()
+                elif psim.Button("Request config##channel"):
+                    self.channel_client.request_config()
 
                 psim.SameLine()
                 psim.BeginDisabled(self.main.paths_taps is None)
@@ -462,30 +459,6 @@ class SrkDemo:
                         skip_throttle=True,
                     )
                 psim.EndDisabled()
-
-                psim.SetNextItemWidth(185 * ui_scale)
-                changed_offset, self.main.cfg.paths.snr_offset_db = psim.InputFloat(
-                    "SNR offset (dB)",
-                    self.main.cfg.paths.snr_offset_db,
-                    format="%.1f",
-                    flags=psim.ImGuiInputTextFlags_EnterReturnsTrue,
-                )
-                if changed_offset:
-                    self.main.cfg.paths.snr_offset_db = np.clip(
-                        self.main.cfg.paths.snr_offset_db, -120.0, 10.0
-                    )
-
-                psim.SetNextItemWidth(185 * ui_scale)
-                changed_max_noise, self.cfg.max_noise_std_db = psim.InputFloat(
-                    "Max noise std (dB)",
-                    self.cfg.max_noise_std_db,
-                    format="%.2f",
-                    flags=psim.ImGuiInputTextFlags_EnterReturnsTrue,
-                )
-
-                if changed_offset or changed_max_noise:
-                    # Trigger re-send of the CIR
-                    self.main._last_paths_update_time = time.time()
 
                 psim.Spacing()
                 _, self.cfg.cir_send_updates = psim.Checkbox(
@@ -510,6 +483,26 @@ class SrkDemo:
                         server_port=self.cfg.channel_port,
                     )
             psim.NewLine()
+
+            psim.SetNextItemWidth(185 * ui_scale)
+            changed_offset, self.main.cfg.paths.snr_offset_db = psim.InputFloat(
+                "SNR offset (dB)",
+                self.main.cfg.paths.snr_offset_db,
+                format="%.1f",
+                flags=psim.ImGuiInputTextFlags_EnterReturnsTrue,
+            )
+
+            psim.SetNextItemWidth(185 * ui_scale)
+            changed_max_noise, self.cfg.max_noise_std_db = psim.InputFloat(
+                "Max noise std (dB)",
+                self.cfg.max_noise_std_db,
+                format="%.2f",
+                flags=psim.ImGuiInputTextFlags_EnterReturnsTrue,
+            )
+
+            if changed_offset or changed_max_noise:
+                # Trigger re-send of the CIR
+                self.main._last_paths_update_time = time.time()
 
             # - CIR batch export
             _, self.cfg.cir_export_tx_index = psim.Combo(
@@ -694,6 +687,7 @@ class SrkDemo:
         if self.stats_history and (
             self.cfg.stats_plotting_mode_i != StatsPlottingMode.DISABLED.value
         ):
+
             n_plots = len(self.cfg.stats_to_plot)
             directions = {
                 StatsPlottingMode.DOWNLINK.value: [("down", "DL")],
