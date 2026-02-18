@@ -84,26 +84,78 @@ class SrkDemo:
         self.stats_baselines_reference_timestamp: float | None = None
 
         # Try connecting to the channel and stats servers.
-        # Connection failure is handled, the user can try again by clicking the "Connect" button.
-        if self.channel_client.connect(
-            server_host=self.cfg.channel_host,
-            server_port=self.cfg.channel_port,
-        ):
+        # Retry several times; verify channel by actually receiving config response (ZMQ connect is async).
+        _channel_retries = 5
+        _retry_delay_s = 2.0
+        _config_wait_s = 5.0
+        channel_connected = False
+        for attempt in range(_channel_retries):
+            if not self.channel_client.connect(
+                server_host=self.cfg.channel_host,
+                server_port=self.cfg.channel_port,
+            ):
+                if attempt < _channel_retries - 1:
+                    self.log.info(
+                        "Channel server not ready, retrying in %.0f s (attempt %d/%d) at %s:%s",
+                        _retry_delay_s,
+                        attempt + 2,
+                        _channel_retries,
+                        self.cfg.channel_host,
+                        self.cfg.channel_port,
+                    )
+                    time.sleep(_retry_delay_s)
+                continue
+            # Give the ZMQ connection time to establish before first request (connect is non-blocking).
+            time.sleep(1.0)
             self.channel_client.request_config()
-        else:
+            # Verify connection by waiting for config response (avoids "connected but first request times out").
+            deadline = time.time() + _config_wait_s
+            while time.time() < deadline:
+                self.channel_client.tick()
+                config = self.channel_client.pop_received_config()
+                if config is not None:
+                    self.process_channel_config(config)
+                    channel_connected = True
+                    break
+                time.sleep(0.05)
+            if channel_connected:
+                break
+            self.log.info(
+                "Channel server did not respond to config request within %.0f s, reconnecting (attempt %d/%d).",
+                _config_wait_s,
+                attempt + 2,
+                _channel_retries,
+            )
+            self.channel_client.disconnect()
+            if attempt < _channel_retries - 1:
+                time.sleep(_retry_delay_s)
+        if not channel_connected:
             self.log.error(
                 f"Failed to connect to channel server ({self.cfg.channel_host}:{self.cfg.channel_port})."
                 " Click the 'Connect' button to try again."
             )
-        if not self.stats_client.connect(
-            topic=self.cfg.stats_topic,
-            server_host=self.cfg.stats_host,
-            server_port=self.cfg.stats_port,
-        ):
-            self.log.error(
-                f"Failed to connect to stats server ({self.cfg.stats_host}:{self.cfg.stats_port})."
-                " Click the 'Connect' button to try again."
-            )
+        for attempt in range(_channel_retries):
+            if self.stats_client.connect(
+                topic=self.cfg.stats_topic,
+                server_host=self.cfg.stats_host,
+                server_port=self.cfg.stats_port,
+            ):
+                break
+            if attempt < _channel_retries - 1:
+                self.log.info(
+                    "Stats server not ready, retrying in %.0f s (attempt %d/%d) at %s:%s",
+                    _retry_delay_s,
+                    attempt + 2,
+                    _channel_retries,
+                    self.cfg.stats_host,
+                    self.cfg.stats_port,
+                )
+                time.sleep(_retry_delay_s)
+            else:
+                self.log.error(
+                    f"Failed to connect to stats server ({self.cfg.stats_host}:{self.cfg.stats_port})."
+                    " Click the 'Connect' button to try again."
+                )
 
     # ------------------------
 
