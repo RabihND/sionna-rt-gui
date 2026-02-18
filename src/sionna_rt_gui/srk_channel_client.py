@@ -89,7 +89,10 @@ class ChannelEmulatorClient(SrkClientBase):
                         continue
 
                 self.socket.send_json(message)
-                self.log.debug("Sent '%s' message", message_type)
+                if message_type == "cir":
+                    self.log.info("Sent CIR message to channel emulator server.")
+                else:
+                    self.log.debug("Sent '%s' message", message_type)
                 self._sent_message_timestamps[message_type] = timestamp
                 self._response_pending_since = time.time()
                 self._response_pending_message_type = message_type
@@ -113,11 +116,20 @@ class ChannelEmulatorClient(SrkClientBase):
                     del self._pending_messages["cir"]
 
             elif msg_type == "cir_ack":
-                self.log.debug("Received CIR acknowledgment")
+                self.log.info(
+                    "Received CIR acknowledgment from channel emulator server."
+                )
 
             elif msg_type == "nrx_ack":
                 self.log.debug("Received neural receiver config acknowledgment")
                 self.srk_cfg.use_neural_receiver = result.get("enabled", False)
+
+            elif msg_type == "error":
+                self.log.error(
+                    "Channel emulator server error: %s (details: %s)",
+                    result.get("error", "unknown"),
+                    result.get("details", "none"),
+                )
 
             self._response_pending_since = None
             self._response_pending_message_type = None
@@ -207,5 +219,15 @@ class ChannelEmulatorClient(SrkClientBase):
             snr_offset_db=self.paths_cfg.snr_offset_db,
             max_noise_std=self.srk_cfg.max_noise_std,
         )
+        # Only one CIR can be pending at a time (overwrites previous). Log only when
+        # we're adding a new pending CIR, not every time we overwrite it while waiting for ack.
+        was_pending = "cir" in self._pending_messages
         self.queue_message(message, last_changed_timestamp, skip_throttle=skip_throttle)
+        if not was_pending:
+            self.log.info(
+                "Queued CIR message (norms=%d, taps=%d, tap_indices=%d)",
+                len(message["norms"]),
+                len(message["taps"]),
+                len(message["tap_indices"]),
+            )
         return True
