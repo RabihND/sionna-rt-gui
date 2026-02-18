@@ -192,8 +192,7 @@ class RenderingConfig:
     slice_plane_normal: tuple[float, float, float] = (0, 0, -1)
     # If None, the plane will be placed at the z-center of the scene bounding box.
     slice_plane_position: tuple[float, float, float] | None = None
-    # default_slice_plane_enabled: bool = False
-    default_slice_plane_enabled: bool = True
+    default_slice_plane_enabled: bool = False
 
     @property
     def rendering_resolution(self) -> tuple[int, int]:
