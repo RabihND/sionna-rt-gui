@@ -100,7 +100,7 @@ class ChannelEmulatorServer:
                     self.log.error(f"ZMQ Error: {e}")
                     break
                 except Exception as e:
-                    self.log.error(f"Error handling request: {e}")
+                    self.log.error(f"Error handling request: {repr(e)}")
 
         except KeyboardInterrupt:
             self.log.info("server shutdown requested")
@@ -117,14 +117,15 @@ class ChannelEmulatorServer:
                 "fft_size": 512,  # int
                 "subcarrier_spacing": 30e3,  # float
                 "frequency": 30e9,  # float
+                "num_ofdm_symbols_per_slot": 14,  # int
             }
 
         elif msg_type == "cir":
             taps = np.array(request["taps"])
             tap_indices = np.array(request["tap_indices"])
-            noise_std = request["noise_std"]
+            sigma_scaling = request["sigma_scaling"]
             self.log.info(
-                f"Handling received CIR with {taps.shape} taps, {tap_indices.shape} tap indices, {noise_std:.2f} noise std"
+                f"Handling received CIR with {taps.shape} taps, {tap_indices.shape} tap indices, {sigma_scaling:.2f} noise std"
             )
             # Actually, nothing to do in this mock server.
             return {
