@@ -283,9 +283,15 @@ class SrkDemo:
 
         # Update received stats
         if self.stats_client.is_connected():
-            status, result = self.stats_client.try_receive()
-            if status == StatsStatus.SUCCESS:
-                self.process_ue_stats(result)
+            # Receive and process all available stats messages. They might have
+            # queued up since the last tick, especially if framerate is low and
+            # stats sending frequency is high.
+            while True:
+                status, result = self.stats_client.try_receive()
+                if status == StatsStatus.SUCCESS:
+                    self.process_ue_stats(result)
+                else:
+                    break
 
     # ------------------------
 
