@@ -36,13 +36,12 @@ def test_trajectory_basics():
     assert len(traj) == 3
     assert traj.distance == (3.0 + 2.0)
 
-    traj.distance = 2.0
+    traj.set(2.0, False)
     check_position_and_direction(traj, [1.0, 2.0, 5.0], [0.0, 0.0, 1.0])
-    traj.distance = 4.0
+    traj.set(4.0, False)
     check_position_and_direction(traj, [1.0, 3.0, 6.0], [0.0, 1.0, 0.0])
 
-    traj.backward = True
-    traj.distance = 2.0
+    traj.set(2.0, True)
     check_position_and_direction(traj, [1.0, 2.0, 5.0], [0.0, 0.0, -1.0])
 
     traj.clear()

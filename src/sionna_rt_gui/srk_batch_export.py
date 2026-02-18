@@ -209,12 +209,14 @@ class CirBatchExporter(Iterator[int]):
                     continue
                 traj = props["trajectories"][rd_name]
 
-                traj.distance, traj.backward = traj.compute_next_distance(
+                next_distance, next_backward = traj.compute_next_distance(
                     traj.distance,
                     traj.backward,
                     self.time_delta * self.parallelism,
                     speed_multiplier=1.0,
                 )
+                traj.set(next_distance, next_backward, allow_watchpoint_callbacks=False)
+
                 obj.position, direction = traj.current_position_and_direction()
                 obj.velocity = direction * traj.velocity
                 dr.make_opaque(obj.position, obj.velocity)
@@ -290,13 +292,17 @@ class CirBatchExporter(Iterator[int]):
                 for instance_i, (k, obj) in enumerate(
                     results[rd_type]["instances"].items()
                 ):
-                    traj_i = deepcopy(traj)
-                    traj_i.distance, traj_i.backward = traj_i.compute_next_distance(
-                        traj_i.distance,
-                        traj_i.backward,
+                    traj_i = traj.clone()
+                    next_distance, next_backward = traj_i.compute_next_distance(
+                        traj.distance,
+                        traj.backward,
                         self.time_delta * instance_i,
                         speed_multiplier=1.0,
                     )
+                    traj_i.set(
+                        next_distance, next_backward, allow_watchpoint_callbacks=False
+                    )
+
                     obj.position, direction = traj_i.current_position_and_direction()
                     obj.velocity = direction * traj_i.velocity
                     dr.make_opaque(obj.position, obj.velocity)

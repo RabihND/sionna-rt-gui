@@ -8,9 +8,10 @@ from collections import defaultdict
 from enum import Enum
 from dataclasses import dataclass, field
 import time
-import numpy as np
+from typing import Callable
 
 import drjit as dr
+import numpy as np
 import polyscope as ps
 from polyscope import imgui as psim
 from sionna import rt
@@ -37,7 +38,7 @@ class Trajectory:
     # Whether to enable the trajectory
     enabled: bool = False
     # Distance along the trajectory [m].
-    distance: float = 0.0
+    _distance: float = 0.0
     # Control points defining the polyline of the trajectory
     # TODO: consider supporting changes in orientation as well (requires fancier interpolation)
     points: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
@@ -46,7 +47,12 @@ class Trajectory:
     # Looping mode index
     looping_mode_i: int = LoopingMode.Mirror.value
     # Whether the trajectory is currently playing in reverse, due e.g. to mirror looping mode.
-    backward: bool = False
+    _backward: bool = False
+
+    # Functions to call when the trajectory reaches a specific distance.
+    watchpoints: list[tuple[float, Callable[[Trajectory, float], bool]]] = field(
+        default_factory=list
+    )
 
     # Cumulative distribution of distances along the trajectory, starting at zero.
     # Has width equal to the number of points.
@@ -55,6 +61,32 @@ class Trajectory:
     @property
     def looping_mode(self) -> LoopingMode:
         return LoopingMode(self.looping_mode_i)
+
+    @property
+    def distance(self) -> float:
+        return self._distance
+
+    @property
+    def backward(self) -> bool:
+        return self._backward
+
+    def set(
+        self, distance: float, backward: bool, allow_watchpoint_callbacks: bool = True
+    ):
+        if allow_watchpoint_callbacks:
+            lo, hi = self._distance, distance
+            # Note: we don't take (min, max) because we don't want to hit the watchpoint
+            # at the time we loop back to the start, which would give (lo=0, hi=max_distance).
+            if backward:
+                lo, hi = hi, lo
+
+            for watched_distance, cb in self.watchpoints:
+                # Note: we exclude the lower bound so that we don't hit the watchpoint
+                # immediately when the trajectory starts playing.
+                if watched_distance > lo and watched_distance <= hi:
+                    cb(self, watched_distance)
+        self._distance = distance
+        self._backward = backward
 
     def eval(
         self, distance: float | np.ndarray
@@ -142,18 +174,39 @@ class Trajectory:
             )
 
         # Snap to the latest added point
-        self.distance = self._cumulative_distances[-1]
+        self._distance = self._cumulative_distances[-1]
 
     def total_distance(self) -> float:
         if len(self._cumulative_distances) == 0:
             return 0.0
         return self._cumulative_distances[-1]
 
+    def clone(self) -> Trajectory:
+        new = Trajectory()
+        new.enabled = self.enabled
+        new._distance = self._distance
+        new.points = self.points.copy()
+        new.velocity = self.velocity
+        new.looping_mode_i = self.looping_mode_i
+        new._backward = self._backward
+        new.watchpoints = self.watchpoints.copy()
+        new._cumulative_distances = self._cumulative_distances.copy()
+        return new
+
     def clear(self):
         self.points = np.array([], dtype=float)
-        self.distance = 0.0
-        self.backward = False
+        self._distance = 0.0
+        self._backward = False
         self._cumulative_distances.clear()
+        self.watchpoints.clear()
+
+    def clear_watchpoints(self):
+        self.watchpoints.clear()
+
+    def add_distance_watchpoint(
+        self, distance: float, callback: Callable[[Trajectory, float], bool]
+    ):
+        self.watchpoints.append((distance, callback))
 
     def __len__(self) -> int:
         return len(self.points)
@@ -229,12 +282,12 @@ def trajectory_gui(gui: "SionnaRtGui", object: rt.SceneObject):
     psim.BeginDisabled(not has_points)
     _, traj.enabled = psim.Checkbox("Enabled##trajectory", traj.enabled)
 
-    # TODO: allow scrubbing along the trajectory (need to trigger all necessary updates)
-    psim.BeginDisabled(True)
-    _, traj.distance = psim.SliderFloat(
-        "Position [m]", traj.distance, 0.0, traj.total_distance()
-    )
-    psim.EndDisabled()
+    # # TODO: allow scrubbing along the trajectory (need to trigger all necessary updates)
+    # psim.BeginDisabled(True)
+    # _, traj.distance = psim.SliderFloat(
+    #     "Position [m]", traj.distance, 0.0, traj.total_distance()
+    # )
+    # psim.EndDisabled()
 
     _, traj.velocity = psim.SliderFloat("Velocity [m/s]", traj.velocity, 0.1, 10.0)
 
@@ -263,7 +316,12 @@ def trajectory_gui(gui: "SionnaRtGui", object: rt.SceneObject):
         ps.remove_curve_network("Trajectory")
 
 
-def animation_tick(gui: "SionnaRtGui", time_delta: float, force: bool = False):
+def animation_tick(
+    gui: "SionnaRtGui",
+    time_delta: float,
+    force: bool = False,
+    allow_watchpoint_callbacks: bool = True,
+):
     """
     Tick the animation.
     """
@@ -280,6 +338,7 @@ def animation_tick(gui: "SionnaRtGui", time_delta: float, force: bool = False):
             time_delta,
             speed_multiplier=cfg.speed_multiplier,
             force=force,
+            allow_watchpoint_callbacks=allow_watchpoint_callbacks,
         )
         if changed:
             if isinstance(obj, rt.Transmitter):
@@ -313,6 +372,7 @@ def animation_tick_single_object(
     time_delta: float,
     speed_multiplier: float = 1.0,
     force: bool = False,
+    allow_watchpoint_callbacks: bool = True,
 ) -> tuple[rt.RadioDevice, bool]:
     traj = gui.animation_config.trajectories[obj_name]
 
@@ -325,8 +385,13 @@ def animation_tick_single_object(
     if obj is None:
         return None, False
 
-    traj.distance, traj.backward = traj.compute_next_distance(
+    next_distance, next_backward = traj.compute_next_distance(
         traj.distance, traj.backward, time_delta, speed_multiplier
+    )
+    traj.set(
+        next_distance,
+        next_backward,
+        allow_watchpoint_callbacks=allow_watchpoint_callbacks,
     )
 
     # Update the object position accordingly

@@ -52,8 +52,9 @@ class SrkDemo:
         self.channel_client = ChannelEmulatorClient(
             self.main.cfg.srk_demo, self.main.cfg.paths
         )
+
         # Keep running min/max of each axis of the CIR plot so that it
-        # doesn´t jump around too much with animated UEs.
+        # doesn't jump around too much with animated UEs.
         self.cir_plot_vlims = [(np.inf, -np.inf), (np.inf, -np.inf)]
         self.batch_cir_exporter: CirBatchExporter | None = None
 
@@ -195,9 +196,10 @@ class SrkDemo:
             traj.enabled = self.cfg.play_animations
             traj.looping_mode_i = LoopingMode.Repeat.value
             # Starting position along the path
-            traj.distance = (
-                0.92 if self.cfg.n_ues == 1 else 0.75
-            ) * traj.total_distance()
+            traj.set(
+                (0.92 if self.cfg.n_ues == 1 else 0.75) * traj.total_distance(),
+                backward=False,
+            )
 
         if self.cfg.n_ues >= 2:
             positions = [
@@ -216,7 +218,10 @@ class SrkDemo:
             traj.enabled = self.cfg.play_animations
             traj.looping_mode_i = LoopingMode.Repeat.value
             # Starting position along the path
-            traj.distance = 0.20 * traj.total_distance()
+            traj.set(
+                0.20 * traj.total_distance(),
+                backward=False,
+            )
 
         gui.animation_config.playing = True
         gui.animation_config.speed_multiplier = 7.0
@@ -225,7 +230,9 @@ class SrkDemo:
         # Note we need to do this regardless of whether animations are actually playing.
         # This will also trigger re-computation and drawing of the paths.
         cfg.paths.auto_update = True
-        animation_tick(gui, time_delta=0.0, force=True)
+        animation_tick(
+            gui, time_delta=0.0, force=True, allow_watchpoint_callbacks=False
+        )
 
         # Force redraw at the next frame
         gui.reset_accumulation_requested = True

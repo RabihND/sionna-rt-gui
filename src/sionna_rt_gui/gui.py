@@ -324,7 +324,7 @@ class SionnaRtGui:
         traj.add_point(p)
         traj.add_point(p + [40, 0, 0])
         traj.enabled = True
-        traj.distance = 0.0  # Start at the first point
+        traj.set(0.0, False, allow_watchpoint_callbacks=False)
         self.animation_config.playing = True
         self.animation_config.speed_multiplier = 10.0
 
