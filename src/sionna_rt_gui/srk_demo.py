@@ -12,7 +12,7 @@ import polyscope.imgui as psim
 import polyscope.implot as psplot
 
 from . import PROJECT_DIR
-from .animation import LoopingMode, animation_tick
+from .animation import LoopingMode, Trajectory, animation_tick
 from .drjit_util import read_gpu_utilization
 from .config import (
     NVIDIA_GREEN,
@@ -156,6 +156,7 @@ class SrkDemo:
         gui.clear_selection()
         gui.clear_radio_devices()
         gui.clear_paths()
+        self.reset_state()
 
         # Ensure we use the right scene
         if "washington_dc" not in cfg.scene_filename:
@@ -200,7 +201,7 @@ class SrkDemo:
             rx = gui.add_radio_device(
                 positions[0], is_transmitter=False, allow_auto_update=False
             )
-            traj = gui.animation_config.trajectories[rx.name]
+            traj: Trajectory = gui.animation_config.trajectories[rx.name]
             for pos in positions:
                 traj.add_point(pos)
             traj.add_point(positions[0])  # Return to the start
