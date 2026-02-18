@@ -758,7 +758,8 @@ class SrkDemo:
 
                 vpad = 0.05 * (vmax - vmin)
                 psplot.SetupAxesLimits(
-                    x_min=-self.cfg.stats_max_entries * 0.1,
+                    # Make sure all entries are visible
+                    x_min=-self.cfg.stats_max_entries / self.cfg.stats_frequency_hz,
                     x_max=0,
                     y_min=vmin - vpad,
                     y_max=vmax + vpad,

@@ -264,6 +264,9 @@ class SrkDemoConfig:
     stats_topic: str = "ue_stats"
     # Per UE
     stats_max_entries: int = 300
+    stats_frequency_hz: int = (
+        20  # Used to adjust the horizontal axis of the stats plots
+    )
     stats_plotting_mode_i: int = StatsPlottingMode.BOTH.value
     stats_to_plot: list[str] = field(
         default_factory=lambda: ["mcs", "bler", "num_prbs"]
