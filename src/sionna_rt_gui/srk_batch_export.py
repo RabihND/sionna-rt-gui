@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import asdict
-from copy import copy, deepcopy
+from copy import copy
 import json
 import os
 from typing import Iterator
@@ -34,7 +34,8 @@ class CirBatchExporter(Iterator[int]):
         self.sampling_frequency_hz: float = sampling_frequency_hz
         self.interpolation_factor: int = interpolation_factor
         self.parallelism: int = parallelism
-        assert parallelism >= 1
+        assert isinstance(interpolation_factor, int) and interpolation_factor >= 1
+        assert isinstance(parallelism, int) and parallelism >= 1
 
         # Iterator state
         self.cir_i = 0
@@ -51,31 +52,29 @@ class CirBatchExporter(Iterator[int]):
         self.devices = self._prepare_temporary_radio_devices(tx_index, rx_index)
 
         # Save all simulation parameters to a JSON file.
-        with open(output_filename, "w") as f:
-            json.dump(
-                {
-                    "channel_emulation": {
-                        "num_taps": gui.cfg.paths.num_taps,
-                        "num_cirs": self.n_cirs,
-                        "sigma_scaling": np.power(
-                            10.0, -gui.cfg.paths.snr_offset_db / 20
-                        ),
-                        "sigma_max": gui.cfg.srk_demo.max_noise_std,
-                    },
-                    "batch": {
-                        "tx_index": tx_index,
-                        "rx_index": rx_index,
-                        "sampling_frequency_hz": sampling_frequency_hz,
-                        "interpolation_factor": interpolation_factor,
-                        "n_cirs": self.n_cirs,
-                        "duration_s": duration_s,
-                    },
-                    "paths": asdict(gui.cfg.paths),
-                    "srk": asdict(gui.cfg.srk_demo),
+        with open(output_filename, "w", encoding="utf-8") as f:
+            contents = {
+                "channel_emulation": {
+                    "center_frequency": self.main.scene.frequency.numpy().item(),
+                    "num_taps": gui.cfg.paths.num_taps,
+                    "num_cirs": self.n_cirs,
+                    "sigma_scaling": np.power(10.0, -gui.cfg.paths.snr_offset_db / 20),
+                    "sigma_max": gui.cfg.srk_demo.max_noise_std,
                 },
-                f,
-                indent=4,
-            )
+                "batch": {
+                    "tx_index": tx_index,
+                    "rx_index": rx_index,
+                    "sampling_frequency_hz": sampling_frequency_hz,
+                    "interpolation_factor": interpolation_factor,
+                    "n_cirs": self.n_cirs,
+                    "duration_s": duration_s,
+                },
+                "paths": asdict(gui.cfg.paths),
+                "srk": asdict(gui.cfg.srk_demo),
+            }
+            contents["paths"]["bandwidth"] = gui.cfg.paths.bandwidth
+            contents["srk"]["max_noise_std"] = gui.cfg.srk_demo.max_noise_std
+            json.dump(contents, f, indent=4)
 
     def __iter__(self):
         return self
