@@ -10,7 +10,9 @@
             "bler_up": 0.025,
             "bler_down": 0.018,
             "num_prbs_up": 25,
-            "num_prbs_down": 50
+            "num_prbs_down": 50,
+            "goodput_up": 3.7,
+            "goodput_down": 5.3
         },
         {
             "ue_id": "UE 1",
@@ -20,7 +22,9 @@
             "bler_up": 0.032,
             "bler_down": 0.021,
             "num_prbs_up": 18,
-            "num_prbs_down": 42
+            "num_prbs_down": 42,
+            "goodput_up": 4.5,
+            "goodput_down": 3.5
         }
     ]
 }

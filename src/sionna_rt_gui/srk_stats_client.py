@@ -19,6 +19,9 @@ STATS_FIELDS_NAMES = {
     "bler_down": "BLER down",
     "num_prbs_up": "PRBs up",
     "num_prbs_down": "PRBs down",
+    "goodput": "Goodput (Mbit/s)",
+    "goodput_up": "Goodput up (Mbit/s)",
+    "goodput_down": "Goodput down (Mbit/s)",
 }
 STATS_FIELDS_TYPES = {
     "timestamp": int,
@@ -29,6 +32,8 @@ STATS_FIELDS_TYPES = {
     "bler_down": float,
     "num_prbs_up": int,
     "num_prbs_down": int,
+    "goodput_up": float,
+    "goodput_down": float,
 }
 STATS_FIELDS_RANGES = {
     "rnti": (0, 65535),
@@ -38,6 +43,10 @@ STATS_FIELDS_RANGES = {
     "bler_down": (0, 1),
     "num_prbs_up": (0, 51),
     "num_prbs_down": (0, 51),
+    "goodput_up": (0, 30),
+    "goodput_down": (0, 30),
+}
+
 }
 
 
