@@ -453,44 +453,44 @@ def prepare_and_normalize_cir(
     tx_index: int,
     rx_index: int,
     num_taps: int,
-    bandwidth: float,
     snr_offset_db: float,
     max_noise_std: float,
 ) -> dict:
-    # Shape: [num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1]
-    taps = taps[rx_index, 0, tx_index, 0, ...]
-    num_time_steps = taps.shape[0]
-    # Retain only the num_taps largest absolute taps
+    """Prepare a CIR message for the cir_zmq server.
+
+    The output format matches the cir_zmq protocol:
+      - taps are normalized (divided by their L2 norm per symbol)
+      - norms carry the original channel gain for noise computation
+      - sigma_scaling and sigma_max are global noise scalars
+      - all arrays are flat 1D
+    """
+    # Input shape: [num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1]
+    taps = taps[rx_index, 0, tx_index, 0, ...]  # [S, num_delay_bins] complex
+
+    # Retain only the num_taps largest absolute taps per symbol
     tap_indices = np.argsort(np.abs(taps), axis=1)[:, ::-1][:, :num_taps]
-    taps = np.take_along_axis(taps, tap_indices, axis=1)
+    taps = np.take_along_axis(taps, tap_indices, axis=1)  # [S, T] complex
 
-    # Convert to real/imag compatible with the C complex type
-    taps = np.reshape(np.stack([taps.real, taps.imag], axis=-1), [num_time_steps, -1])
+    # Convert to interleaved real/imag: [S, T] complex -> [S, 2*T] float
+    taps_ri = np.stack([taps.real, taps.imag], axis=-1).reshape(taps.shape[0], -1)
 
-    taps, norm, noise_std = _apply_noise_and_normalize(
-        taps, bandwidth, snr_offset_db, max_noise_std
-    )
+    # Compute norms (L2 norm per symbol) and normalize taps
+    norms = np.sqrt(np.sum(taps_ri**2, axis=-1))  # [S]
+    nonzero = norms > 0
+    taps_ri[nonzero] = taps_ri[nonzero] / norms[nonzero, None]
 
-    tap_indices = tap_indices.astype(np.uint16)
-
-    if num_time_steps == 1:
-        taps = taps[0]
-        tap_indices = tap_indices[0]
-        norm = float(norm[0])
-        noise_std = float(noise_std[0])
-    else:
-        norm = norm.tolist()
-        noise_std = noise_std.tolist()
-
-    taps = taps.tolist()
-    tap_indices = tap_indices.tolist()
+    # Compute sigma_scaling and sigma_max (global scalars)
+    # Consistent with srk_batch_export.py: sigma_scaling is a pure dB offset factor.
+    sigma_scaling = float(10.0 ** (-snr_offset_db / 20.0))
+    sigma_max = float(max_noise_std)
 
     return {
         "msg_type": "cir",
-        "taps": taps,
-        "tap_indices": tap_indices,
-        "taps_norm": norm,
-        "noise_std": noise_std,
+        "sigma_scaling": sigma_scaling,
+        "sigma_max": sigma_max,
+        "norms": norms.astype(np.float32).flatten().tolist(),
+        "taps": taps_ri.astype(np.float32).flatten().tolist(),
+        "tap_indices": tap_indices.astype(np.uint16).flatten().tolist(),
     }
 
 
@@ -506,7 +506,7 @@ def prepare_and_normalize_cir_batch(
     # Shape: [num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1]
     taps = taps[rx_index, 0, tx_index, 0, ...]
     num_time_steps = taps.shape[-2]
-    # Retain only the num_taps largest absolute taps
+    # Retain only the num_taps largest absolute taps at each time step
     tap_indices = np.argsort(np.abs(taps), axis=-1)[..., ::-1][..., :num_taps]
     taps = np.take_along_axis(taps, tap_indices, axis=-1)
 
