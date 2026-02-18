@@ -40,8 +40,8 @@ class ChannelEmulatorClient(SrkClientBase):
         self._response_pending_message_type: str | None = None
         # Since we cannot send new messages until the last one is acknowledged,
         # we queue at most one message of each type.
-        # Maps the message type to (message, timestamp).
-        self._pending_messages: dict[str, tuple[dict, float]] = {}
+        # Maps the message type to (message, timestamp, skip_throttle).
+        self._pending_messages: dict[str, tuple[dict, float, bool]] = {}
 
     # ------------------------
 
@@ -71,10 +71,14 @@ class ChannelEmulatorClient(SrkClientBase):
             # Send the first pending message, if any. Other queued messages
             # will have to keep waiting.
             to_delete = None
-            for message_type, (message, timestamp) in self._pending_messages.items():
+            for message_type, (
+                message,
+                timestamp,
+                skip_throttle,
+            ) in self._pending_messages.items():
                 # Throttling logic to avoid flooding the server with CIR messages when
                 # a UE is being moved at each frame.
-                if message_type == "cir" and not message.get("skip_throttle", False):
+                if message_type == "cir" and not skip_throttle:
                     time_since_cir_update = (
                         time.time() - self._sent_message_timestamps.get(message_type, 0)
                     )
@@ -120,9 +124,15 @@ class ChannelEmulatorClient(SrkClientBase):
 
         return status, result
 
-    def queue_message(self, message: dict, timestamp: float) -> bool:
+    def queue_message(
+        self, message: dict, timestamp: float, skip_throttle: bool = False
+    ) -> bool:
         # Note: the previous pending message of this type, if any, will be overwritten.
-        self._pending_messages[message["msg_type"]] = (message, timestamp)
+        self._pending_messages[message["msg_type"]] = (
+            message,
+            timestamp,
+            skip_throttle,
+        )
 
     # ------------------------
 
@@ -149,7 +159,7 @@ class ChannelEmulatorClient(SrkClientBase):
 
     # ------------------------
 
-    def send_neural_receiver_config(self, use_neural_receiver: bool):
+    def send_neural_receiver_config(self, use_neural_receiver: bool) -> bool:
         if not self.is_connected():
             self.log.debug(
                 "Not connected to channel emulator server, cannot send neural receiver config."
@@ -197,7 +207,5 @@ class ChannelEmulatorClient(SrkClientBase):
             snr_offset_db=self.paths_cfg.snr_offset_db,
             max_noise_std=self.srk_cfg.max_noise_std,
         )
-        if skip_throttle:
-            message["skip_throttle"] = True
-        self.queue_message(message, last_changed_timestamp)
+        self.queue_message(message, last_changed_timestamp, skip_throttle=skip_throttle)
         return True
