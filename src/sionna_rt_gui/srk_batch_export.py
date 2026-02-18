@@ -131,7 +131,7 @@ class CirBatchExporter(Iterator[int]):
                 bandwidth=paths_cfg.bandwidth,
                 l_min=paths_cfg.l_min,
                 l_max=paths_cfg.l_max,
-                sampling_frequency=paths_cfg.sampling_frequency,
+                sampling_frequency=self.sampling_frequency_hz,
                 num_time_steps=self.interpolation_factor,  # Doppler interpolation
                 normalize=paths_cfg.normalize,
                 normalize_delays=paths_cfg.normalize_delays,
