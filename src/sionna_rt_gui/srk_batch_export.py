@@ -290,18 +290,18 @@ class CirBatchExporter(Iterator[int]):
                 for instance_i, (k, obj) in enumerate(
                     results[rd_type]["instances"].items()
                 ):
-                    traj = deepcopy(traj)
-                    traj.distance, traj.backward = traj.compute_next_distance(
-                        traj.distance,
-                        traj.backward,
+                    traj_i = deepcopy(traj)
+                    traj_i.distance, traj_i.backward = traj_i.compute_next_distance(
+                        traj_i.distance,
+                        traj_i.backward,
                         self.time_delta * instance_i,
                         speed_multiplier=1.0,
                     )
-                    obj.position, direction = traj.current_position_and_direction()
-                    obj.velocity = direction * traj.velocity
+                    obj.position, direction = traj_i.current_position_and_direction()
+                    obj.velocity = direction * traj_i.velocity
                     dr.make_opaque(obj.position, obj.velocity)
 
-                    results[rd_type]["trajectories"][k] = traj
+                    results[rd_type]["trajectories"][k] = traj_i
 
         return results
 
