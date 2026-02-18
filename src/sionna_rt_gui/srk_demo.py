@@ -60,6 +60,8 @@ class SrkDemo:
         # doesn't jump around too much with animated UEs.
         self.cir_plot_vlims = [(np.inf, -np.inf), (np.inf, -np.inf)]
         self.batch_cir_exporter: CirBatchExporter | None = None
+        # One-time hint when CIRs could be sent during playback but the option is off
+        self._logged_cir_send_disabled: bool = False
 
         # --- Stats
         self.stats_client = UEStatsSubscriber()
@@ -276,10 +278,17 @@ class SrkDemo:
             if config is not None:
                 self.process_channel_config(config)
 
-            if (self.main.paths_taps is not None) and self.cfg.cir_send_updates:
-                self.channel_client.maybe_send_cir(
-                    self.main.paths_taps, self.main._last_paths_update_time
-                )
+            if self.main.paths_taps is not None:
+                if self.cfg.cir_send_updates:
+                    self.channel_client.maybe_send_cir(
+                        self.main.paths_taps, self.main._last_paths_update_time
+                    )
+                elif not self._logged_cir_send_disabled:
+                    self._logged_cir_send_disabled = True
+                    self.log.info(
+                        "CIR updates during playback are currently disabled."
+                        " Enable 'Send CIRs to channel emulator' to send CIRs as the UE moves along the trajectory."
+                    )
 
         # Update received stats
         if self.stats_client.is_connected():
