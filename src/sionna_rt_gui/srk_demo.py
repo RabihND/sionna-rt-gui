@@ -305,15 +305,29 @@ class SrkDemo:
     # ------------------------
 
     def process_channel_config(self, config: dict):
+        paths_need_update = False
         if "num_taps" in config:
             self.main.cfg.paths.num_taps = config["num_taps"]
+            # Paths are computed with l_min..l_max (delay bins). We need at least num_taps bins
+            # so we can send that many taps per symbol (server expects S * num_taps * 2 floats).
+            min_bins = self.main.cfg.paths.num_taps
+            self.main.cfg.paths.l_max = max(
+                self.main.cfg.paths.l_max,
+                self.main.cfg.paths.l_min + min_bins - 1,
+            )
+            paths_need_update = True
         if "fft_size" in config:
             self.main.cfg.paths.fft_size = config["fft_size"]
         if "subcarrier_spacing" in config:
             self.main.cfg.paths.subcarrier_spacing = config["subcarrier_spacing"]
         if "frequency" in config:
             self.main.cfg.paths.frequency = config["frequency"]
+        if "num_ofdm_symbols_per_slot" in config:
+            self.main.cfg.paths.num_time_steps = config["num_ofdm_symbols_per_slot"]
         self.log.info(f"Applied received channel config: {config}")
+        paths = getattr(self.main, "paths", None)
+        if paths_need_update and paths is not None:
+            self.main.update_paths(show=True, force=True)
 
     def set_use_neural_receiver(self, v: bool):
         if v == self.cfg.use_neural_receiver:
