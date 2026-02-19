@@ -120,8 +120,7 @@ class SrkDemo:
         assert self.cfg.n_ues in (
             0,
             1,
-            2,
-        ), "The demo scenario is only implemented for 0, 1 or 2 UEs."
+        ), "The demo scenario is only implemented for 0 or 1 UE."
 
         self.reset_state()
         self.cfg.cir_max_delay_to_plot_ns = 1500.0
@@ -159,25 +158,24 @@ class SrkDemo:
         self.reset_state()
 
         # Ensure we use the right scene
-        if "washington_dc" not in cfg.scene_filename:
-            if "washington_dc" not in gui.built_in_scene_names:
+        if "barcelona_mwc" not in cfg.scene_filename:
+            if "barcelona_mwc" not in gui.known_scene_names:
                 raise ValueError(
-                    f'Scene "washington_dc" not found. Place the scene under `data/scenes/`.'
-                    f" Current built-in scenes are: {gui.built_in_scene_names}"
+                    f'Scene "barcelona_mwc" not found. Place the scene under `data/scenes/`.'
+                    f" Current built-in scenes are: {gui.known_scene_names}"
                 )
 
-            cfg.scene_filename = gui.built_in_scenes["washington_dc"]
-            gui.load_scene(
-                "data/scenes/washington_dc/washington_dc.xml",
-                recenter_camera=False,
-            )
+            cfg.scene_filename = gui.known_scene_paths[
+                gui.known_scene_names.index("barcelona_mwc")
+            ]
+            gui.load_scene(cfg.scene_filename, recenter_camera=False)
 
         # Camera pose
         self.main.home_camera_to_world = np.array(
             [
-                [5.5471003e-01, -8.3204406e-01, -3.2004149e-08, -8.1965729e01],
-                [5.7973224e-01, 3.8649887e-01, 7.1730834e-01, 3.4181381e01],
-                [-5.9683138e-01, -3.9789820e-01, 6.9675630e-01, -5.4985059e02],
+                [6.7270803e-01, -7.3990798e-01, 0.0000000e00, -1.2223753e02],
+                [5.6369638e-01, 5.1250035e-01, 6.4775753e-01, 7.1323425e01],
+                [-4.7928104e-01, -4.3575174e-01, 7.6184660e-01, -6.5106433e02],
                 [0.0000000e00, 0.0000000e00, 0.0000000e00, 1.0000000e00],
             ]
         )
@@ -185,58 +183,51 @@ class SrkDemo:
 
         # Add transmitter
         tx = gui.add_radio_device(
-            [-54.172, -248.828, 63], is_transmitter=True, allow_auto_update=False
+            [-83.43, 28.88, 64.68], is_transmitter=True, allow_auto_update=False
         )
-        tx.look_at([-72.702, 156.706, 1.500])
+        tx.orientation = [-2.07, 0.15, 0.00]
 
         # Add receiver(s)
         if self.cfg.n_ues >= 1:
+            height = 7.0
             positions = [
-                (19.701, -114.505, 1.500),
-                (19.795, 159.378, 1.500),
-                (-157.190, 160.221, 1.500),
-                (-158.221, -123.441, 1.500),
-                (-66.793, -145.738, 1.500),
+                # Top: from left to right
+                [-96.10933, -139.28323, height],
+                [-25.154995, -156.64818, height],
+                [48.104374, -230.49063, height],
+                # Center: from top to bottom
+                [-71.607666, -291.5554, height],
+                # Right: from bottom to top
+                [-12.216424, -320.1938, height],
+                [89.10431, -272.72232, height],
+                [48.134407, -229.5349, height],
+                # Center: from top to bottom
+                [-71.607666, -291.5554, height],
+                # Bottom: from right to left
+                [-134.45807, -243.13335, height],
+                [-182.13972, -176.88214, height],
             ]
             rx = gui.add_radio_device(
                 positions[0], is_transmitter=False, allow_auto_update=False
             )
             traj: Trajectory = gui.animation_config.trajectories[rx.name]
+            traj.velocity = 11.11  # 40 km/h (car)
             for pos in positions:
                 traj.add_point(pos)
             traj.add_point(positions[0])  # Return to the start
-            traj.enabled = self.cfg.play_animations
+            traj.enabled = False  # Start paused; user presses Play to move
             traj.looping_mode_i = LoopingMode.Repeat.value
             # Starting position along the path
-            traj.set(
-                (0.92 if self.cfg.n_ues == 1 else 0.75) * traj.total_distance(),
-                backward=False,
-            )
+            traj.set(0.03 * traj.total_distance(), False)
 
-        if self.cfg.n_ues >= 2:
-            positions = [
-                (34.118, -186.824, 1.500),
-                (205.270, -185.245, 1.500),
-                (197.912, -82.481, 1.500),
-                (41.981, -146.337, 1.500),
-            ]
-            rx = gui.add_radio_device(
-                positions[0], is_transmitter=False, allow_auto_update=False
-            )
-            traj = gui.animation_config.trajectories[rx.name]
-            for pos in positions:
-                traj.add_point(pos)
-            traj.add_point(positions[0])  # Return to the start
-            traj.enabled = self.cfg.play_animations
-            traj.looping_mode_i = LoopingMode.Repeat.value
-            # Starting position along the path
-            traj.set(
-                0.20 * traj.total_distance(),
-                backward=False,
-            )
+            # Automatically set the CIR export duration to the trajectory duration.
+            self.cfg.cir_export_duration_s = traj.total_distance() / traj.velocity
 
-        gui.animation_config.playing = True
-        gui.animation_config.speed_multiplier = 7.0
+        # Start paused so the UE is not moving at the beginning.
+        gui.animation_config.playing = False
+        gui.animation_config.speed_multiplier = 1.0
+        if self.cfg.play_animations:
+            gui.set_all_animations_playing(True)
 
         # Place the UEs at their starting positions along the trajectories.
         # Note we need to do this regardless of whether animations are actually playing.
