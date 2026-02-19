@@ -136,14 +136,14 @@ class PathsConfig:
     # CIR
     compute_cir: bool = True
     num_taps: int = 10
-    fft_size: int = 512
+    fft_size: int = 1024
     subcarrier_spacing: float = 30e3
     l_min: int = 0
     l_max: int = 100
     num_time_steps: int = 1
     normalize: bool = False
     normalize_delays: bool = True
-    snr_offset_db: float = -50
+    snr_offset_db: float = 60.0
 
     @property
     def bandwidth(self) -> float:
@@ -226,17 +226,20 @@ class SrkDemoConfig:
     show_cir: bool = True
     channel_host: str = "localhost"
     channel_port: int = 5556
+    # Maximum noise std value to send to the server (power dB: linear = 10^(dB/10)).
+    max_noise_std_db: float = 18.0
+
+    # - SRK channel emulator (OpenAirInterface plugin)
+    #   Supports sending CIR updates live to the channel emulator server.
     # Enable sending CIR updates to the channel emulation server.
-    cir_send_updates: bool = True
+    cir_send_updates: bool = False
     # When a user device is being moved or is animated, new CIRs are generated
     # at every frame. However, we don't want to flood the server with new CIR messages.
     # Wait until this amount of time has passed since the last CIR was sent before sending
     # the new CIR to the server.
-    cir_min_send_delay_s: float = 1.0
+    cir_min_send_delay_s: float = 0.001  # 1 ms
     # Maximum delay to show in the CIR plot, in ns.
     cir_max_delay_to_plot_ns: float | None = 1500
-    # Maximum noise std value to send to the server.
-    max_noise_std_db: float = -4.0
 
     # --- CIR batch export
     cir_output_filename: str = "cir_export.json"
@@ -278,7 +281,7 @@ class SrkDemoConfig:
 
     # --- Demo scenario
     n_ues: int = 1
-    play_animations: bool = True
+    play_animations: bool = False  # Start paused; set True to auto-play on load
 
     # --- Display
     show_gpu_utilization: bool = True
