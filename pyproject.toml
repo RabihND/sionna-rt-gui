@@ -40,6 +40,9 @@ dev = [
 
 [project.scripts]
 sionna-rt-gui = "scripts.run:main"
+srk-mock-channel-server = "scripts.srk_mock_channel_server:main"
+srk-mock-stats-server = "scripts.srk_mock_stats_server:main"
+srk-mock-stats-client = "scripts.srk_mock_stats_client:main"
 
 [tool.setuptools.packages.find]
 where = ["src", "."]
