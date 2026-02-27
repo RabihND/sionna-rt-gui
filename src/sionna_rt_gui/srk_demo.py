@@ -11,7 +11,7 @@ import polyscope as ps
 import polyscope.imgui as psim
 import polyscope.implot as psplot
 
-from . import PROJECT_DIR
+from . import DATA_DIR
 from .animation import LoopingMode, Trajectory, animation_tick
 from .drjit_util import read_gpu_utilization
 from .config import (
@@ -73,7 +73,7 @@ class SrkDemo:
         self.stats_baselines: dict[str, np.ndarray] | None = None
         if self.cfg.stats_baselines_npy is not None:
             fname = os.path.realpath(
-                os.path.join(PROJECT_DIR, self.cfg.stats_baselines_npy)
+                os.path.join(DATA_DIR, self.cfg.stats_baselines_npy)
             )
             self.stats_baselines = load_stats_baselines(
                 fname, self.cfg.stats_baselines_source

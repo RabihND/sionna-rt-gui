@@ -16,7 +16,6 @@ srk_demo:
   stats_max_entries: 300
   stats_frequency_hz: 10
   stats_to_plot: ["mcs", "bler", "goodput"]
-  stats_baselines_npy:  "data/srk/stats_baselines.npy"
 
 rendering:
   default_resolution: [1920, 1010]  # [width, height] in pixels
