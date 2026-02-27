@@ -55,6 +55,7 @@ sionna_rt_gui = [
     "data/scenes/**/*.xml",
     "data/scenes/**/*.ply",
     "data/scenes/**/*.obj",
+    "data/srk/*.json",
 ]
 
 [tool.pylint.messages_control]
