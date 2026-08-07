@@ -534,6 +534,17 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
             f"{channel['capacity_mbps']:.1f} Mbit/s"
         )
 
+    if channel["flatness_db"] > 1.0:
+        psim.TextDisabled(
+            f"The channel varies by {channel['flatness_db']:.1f} dB across the "
+            "band, so some subcarriers carry more than others."
+        )
+    else:
+        psim.TextDisabled(
+            f"The channel is flat across the band ({channel['flatness_db']:.1f} dB "
+            "variation), so every subcarrier sees the same conditions."
+        )
+
     nr = gui.nr_link_stats
     if nr is not None:
         psim.Spacing()
@@ -561,53 +572,105 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
             )
     else:
         psim.Spacing()
-        psim.TextDisabled("Press Measure to evaluate the link.")
+        psim.TextDisabled(
+            "Run 5G NR to send coded slots through this channel and count the "
+            "bit errors."
+        )
 
-    # --- The band, drawn: signal-to-noise ratio per subcarrier
-    snr_db = 10.0 * np.log10(np.maximum(channel["snr_linear"], 1e-12))
+    # --- Why this scheme was chosen: throughput and error rate for every one
+    psim.Spacing()
     draw_list = psim.GetWindowDrawList()
     origin = psim.GetCursorScreenPos()
-    plot_height = max(psim.GetContentRegionAvail()[1] - 12 * scale, 60 * scale)
-    plot_width = max(available_width - 50 * scale, 80 * scale)
-    x0 = origin[0] + 42 * scale
+    available_height = psim.GetContentRegionAvail()[1]
+    plot_height = max(available_height - 26 * scale, 70 * scale)
+    plot_width = max(available_width - 56 * scale, 120 * scale)
+    x0 = origin[0] + 44 * scale
     y0 = origin[1]
 
-    top = float(np.ceil(max(np.max(snr_db), 5.0) / 5.0) * 5.0)
-    bottom = float(np.floor(min(np.min(snr_db), top - 20.0) / 5.0) * 5.0)
-    grid = im_col32(0.55, 0.57, 0.58, 0.22)
-    text = im_col32(0.62, 0.64, 0.65, 0.9)
+    grid_color = im_col32(0.55, 0.57, 0.58, 0.22)
+    label_color = im_col32(0.62, 0.64, 0.65, 0.9)
+    bar_color = im_col32(0.28, 0.45, 0.70)
+    bler_color = im_col32(0.92, 0.55, 0.30)
 
-    for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
+    if stats is None:
+        psim.TextDisabled(
+            "Measure the link to see how throughput and error rate vary with "
+            "the modulation and coding scheme."
+        )
+        return
+
+    schemes = sorted(stats["all"], key=lambda r: r["mcs_index"])
+    slot_seconds = stats["num_ofdm_symbols"] / max(
+        float(gui.cfg.paths.subcarrier_spacing), 1.0
+    )
+    throughputs = np.array(
+        [r["bits_per_block"] / slot_seconds / 1e6 for r in schemes]
+    )
+    blers = np.array([max(r["bler"], 0.0) for r in schemes])
+    peak = max(float(np.max(throughputs)), 1e-6)
+
+    # Frame and gridlines, labelled on both sides
+    for fraction in (0.0, 0.5, 1.0):
         y = y0 + fraction * plot_height
-        draw_list.AddLine((x0, y), (x0 + plot_width, y), grid, 1.0)
+        draw_list.AddLine((x0, y), (x0 + plot_width, y), grid_color, 1.0)
         draw_list.AddText(
             (origin[0], y - 7 * scale),
-            text,
-            f"{top - fraction * (top - bottom):.0f}",
+            label_color,
+            f"{peak * (1.0 - fraction):.0f}",
         )
-    if stats is not None:
-        # Where the chosen scheme's effective SINR sits
-        effective = stats["chosen"]["sinr_eff_db"]
-        if bottom <= effective <= top:
-            y = y0 + (top - effective) / (top - bottom) * plot_height
-            draw_list.AddLine(
-                (x0, y), (x0 + plot_width, y), im_col32(*ACCENT_BRIGHT, 0.7), 1.4 * scale
+        draw_list.AddText(
+            (x0 + plot_width + 6 * scale, y - 7 * scale),
+            label_color,
+            f"{100.0 * (1.0 - fraction):.0f}%",
+        )
+
+    step = plot_width / max(len(schemes), 1)
+    chosen_index = stats["chosen"]["mcs_index"]
+    for i, scheme in enumerate(schemes):
+        left = x0 + i * step + 0.15 * step
+        right = x0 + (i + 1) * step - 0.15 * step
+        height = throughputs[i] / peak * plot_height
+        is_chosen = scheme["mcs_index"] == chosen_index
+        draw_list.AddRectFilled(
+            (left, y0 + plot_height - height),
+            (right, y0 + plot_height),
+            im_col32(*ACCENT_BRIGHT) if is_chosen else bar_color,
+        )
+        if i % 4 == 0 or is_chosen:
+            draw_list.AddText(
+                (left, y0 + plot_height + 3 * scale),
+                im_col32(*ACCENT_BRIGHT) if is_chosen else label_color,
+                str(scheme["mcs_index"]),
             )
 
-    points = np.stack(
+    # Error rate over the same axis, as a fraction of full height
+    curve = np.stack(
         [
-            x0 + np.linspace(0.0, plot_width, snr_db.size),
-            y0 + np.clip((top - snr_db) / (top - bottom), 0.0, 1.0) * plot_height,
+            x0 + (np.arange(len(schemes)) + 0.5) * step,
+            y0 + (1.0 - np.clip(blers, 0.0, 1.0)) * plot_height,
         ],
         axis=1,
     ).astype(np.float32)
-    draw_list.AddPolyline(np.asfortranarray(points), im_col32(0.45, 0.72, 0.95), 0, 1.8 * scale)
-    draw_list.AddText(
-        (x0 + plot_width - 150 * scale, y0 + plot_height + 2 * scale),
-        text,
-        "signal-to-noise ratio [dB] across the band",
+    draw_list.AddPolyline(np.asfortranarray(curve), bler_color, 0, 2.0 * scale)
+
+    # The target the choice was made against
+    target_y = y0 + (1.0 - min(max(gui.phy_bler_target, 0.0), 1.0)) * plot_height
+    draw_list.AddLine(
+        (x0, target_y),
+        (x0 + plot_width, target_y),
+        (bler_color & 0x00FFFFFF) | (120 << 24),
+        1.2 * scale,
     )
-    psim.Dummy((available_width, plot_height + 16 * scale))
+
+    draw_list.AddText(
+        (x0, y0 + plot_height + 15 * scale),
+        label_color,
+        "modulation and coding scheme    "
+        "bars: throughput [Mbit/s, left]    "
+        "line: block error rate [%, right]    "
+        "faint line: target",
+    )
+    psim.Dummy((available_width, plot_height + 26 * scale))
 
 
 def _run_nr_link(gui: "SionnaRtGui") -> dict | None:
