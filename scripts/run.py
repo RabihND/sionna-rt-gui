@@ -15,8 +15,21 @@ def add_project_root_to_path():
         sys.path.append(lib_path)
 
 
+def enable_nvidia_prime_offload():
+    # On hybrid-graphics Linux laptops, the OpenGL context is created on the
+    # integrated GPU (Mesa) by default. The CUDA-OpenGL interop used to upload
+    # frames directly from the device then fails with CUDA_ERROR_UNKNOWN.
+    # Request PRIME render offload so the GL context lives on the NVIDIA GPU.
+    # Must run before the GL context is created; harmless if GL is already
+    # on the NVIDIA GPU, and user-provided values take precedence.
+    if sys.platform == "linux" and os.path.exists("/proc/driver/nvidia"):
+        os.environ.setdefault("__NV_PRIME_RENDER_OFFLOAD", "1")
+        os.environ.setdefault("__GLX_VENDOR_LIBRARY_NAME", "nvidia")
+
+
 if __name__ == "__main__":
     add_project_root_to_path()
+    enable_nvidia_prime_offload()
 
 from sionna_rt_gui import AppHolder, DEFAULT_CONFIG_PATH
 from sionna_rt_gui.config import load_config
