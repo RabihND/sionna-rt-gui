@@ -106,6 +106,14 @@ BOTTOM_TAB_ICONS = {
     "Link": icons.link_icon,
 }
 
+# Height the bottom area is grown to when one of these tabs is opened, so a
+# chart is not left half drawn. Only ever grows, never shrinks a chosen size.
+BOTTOM_TAB_MIN_HEIGHT = {
+    "Impulse response": 320.0,
+    "Antenna pattern": 320.0,
+    "Link": 400.0,
+}
+
 # Tabs of the properties area, in display order
 PROPERTIES_TABS = [
     "Object",
@@ -3558,9 +3566,13 @@ class SionnaRtGui:
                 )
             )
             self.transport_gui(scale)
-            if self.bottom_tab != previous_tab and BOTTOM_TABS[self.bottom_tab] != "Timeline":
-                # The plots need more room than the transport controls
-                self.layout.timeline_height = max(self.layout.timeline_height, 300.0)
+            if self.bottom_tab != previous_tab:
+                # The plots need more room than the transport controls, and the
+                # link editor prints its figures above its chart
+                self.layout.timeline_height = max(
+                    self.layout.timeline_height,
+                    BOTTOM_TAB_MIN_HEIGHT.get(BOTTOM_TABS[self.bottom_tab], 0.0),
+                )
             psim.Dummy((0.0, 2 * scale))
 
             match BOTTOM_TABS[self.bottom_tab]:

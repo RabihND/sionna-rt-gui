@@ -443,6 +443,16 @@ def link_simulation_contents(gui: "SionnaRtGui") -> None:
     psim.PopTextWrapPos()
 
 
+def _flatness_note(channel: dict) -> str:
+    """How even the channel is across the band, in one clause."""
+    if channel["flatness_db"] > 1.0:
+        return (
+            f"the channel varies by {channel['flatness_db']:.1f} dB across the "
+            "band"
+        )
+    return f"the channel is flat across the band ({channel['flatness_db']:.1f} dB)"
+
+
 def phy_link_contents(gui: "SionnaRtGui") -> None:
     """
     Link metrics from sionna's system-level layer, with the per-subcarrier
@@ -489,6 +499,10 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
         gui.phy_metrics_stats is None and gui.phy_auto_measure
     ):
         gui.phy_auto_measure = False
+        # The channel figures are refreshed on a timer; a measurement has to be
+        # made against the channel as it stands now, not as it stood a moment ago
+        refresh_statistics(gui, force=True)
+        channel = gui.link_simulation_stats or channel
         gui.phy_metrics_stats = phy_metrics.link_metrics(
             channel["snr_linear"], bler_target=gui.phy_bler_target
         )
@@ -525,38 +539,39 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
         slot_seconds = stats["num_ofdm_symbols"] / max(
             float(gui.cfg.paths.subcarrier_spacing), 1.0
         )
-        throughput_mbps = chosen["bits_per_block"] / slot_seconds / 1e6
+        offered_mbps = chosen["bits_per_block"] / slot_seconds / 1e6
+        delivered_mbps = offered_mbps * (1.0 - min(max(chosen["bler"], 0.0), 1.0))
         psim.Spacing()
         psim.TextColored(
             (*ACCENT_BRIGHT, 1.0),
-            f"MCS {chosen['mcs_index']} at {chosen['bler']:.1%} block error rate, "
-            f"{throughput_mbps:.1f} Mbit/s",
+            f"MCS {chosen['mcs_index']} delivers {delivered_mbps:.1f} Mbit/s at "
+            f"{chosen['bler']:.1%} block error rate",
         )
         psim.Text(
-            f"Effective SINR {chosen['sinr_eff_db']:.1f} dB over "
-            f"{stats['num_subcarriers']} subcarriers, "
-            f"{chosen['bits_per_block']} bits per block"
+            f"Effective SINR {chosen['sinr_eff_db']:.1f} dB  ·  "
+            f"{stats['num_subcarriers']} subcarriers  ·  "
+            f"{chosen['bits_per_block']} bits per block  ·  "
+            f"Shannon capacity {channel['capacity_mbps']:.1f} Mbit/s"
         )
         if not stats["meets_target"]:
             psim.TextColored(
                 (0.92, 0.55, 0.30, 1.0),
                 "No scheme meets the target: the link would not close",
             )
-        psim.TextDisabled(
-            f"Shannon capacity of the same channel: "
-            f"{channel['capacity_mbps']:.1f} Mbit/s"
-        )
-
-    if channel["flatness_db"] > 1.0:
-        psim.TextDisabled(
-            f"The channel varies by {channel['flatness_db']:.1f} dB across the "
-            "band, so some subcarriers carry more than others."
-        )
+        # Everything worth knowing but not worth a line of its own
+        notes = [_flatness_note(channel)]
+        if chosen["sinr_eff_db"] >= 29.9:
+            notes.append("the tables stop at 30 dB, so a stronger link reads the same")
+        missing = stats.get("unavailable") or []
+        if len(missing) > 1:
+            notes.append(
+                f"MCS {missing[0]}-{missing[-1]} are not in sionna's table here"
+            )
+        elif missing:
+            notes.append(f"MCS {missing[0]} is not in sionna's table here")
+        psim.TextDisabled("  ·  ".join(notes))
     else:
-        psim.TextDisabled(
-            f"The channel is flat across the band ({channel['flatness_db']:.1f} dB "
-            "variation), so every subcarrier sees the same conditions."
-        )
+        psim.TextDisabled(_flatness_note(channel))
 
     nr = gui.nr_link_stats
     if nr is not None:
@@ -590,25 +605,12 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
             "bit errors."
         )
 
-    # --- Why this scheme was chosen: throughput and error rate for every one
-    psim.Spacing()
-    draw_list = psim.GetWindowDrawList()
-    origin = psim.GetCursorScreenPos()
-    available_height = psim.GetContentRegionAvail()[1]
-    plot_height = max(available_height - 26 * scale, 70 * scale)
-    plot_width = max(available_width - 56 * scale, 120 * scale)
-    x0 = origin[0] + 44 * scale
-    y0 = origin[1]
-
-    grid_color = im_col32(0.55, 0.57, 0.58, 0.22)
-    label_color = im_col32(0.62, 0.64, 0.65, 0.9)
-    bar_color = im_col32(0.28, 0.45, 0.70)
-    bler_color = im_col32(0.92, 0.55, 0.30)
-
+    # --- Why this scheme was chosen: what every scheme would deliver here
     if stats is None:
+        psim.Spacing()
         psim.TextDisabled(
-            "Measure the link to see how throughput and error rate vary with "
-            "the modulation and coding scheme."
+            "Measure the link to see how much each modulation and coding "
+            "scheme would deliver on this channel."
         )
         return
 
@@ -616,36 +618,70 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
     slot_seconds = stats["num_ofdm_symbols"] / max(
         float(gui.cfg.paths.subcarrier_spacing), 1.0
     )
-    throughputs = np.array(
-        [r["bits_per_block"] / slot_seconds / 1e6 for r in schemes]
-    )
-    blers = np.array([max(r["bler"], 0.0) for r in schemes])
-    peak = max(float(np.max(throughputs)), 1e-6)
+    # A block that fails its check carries nothing, so the bars show what gets
+    # through and the errors take their share off the top of each bar.
+    offered = np.array([r["bits_per_block"] / slot_seconds / 1e6 for r in schemes])
+    blers = np.clip([r["bler"] for r in schemes], 0.0, 1.0)
+    delivered = offered * (1.0 - blers)
+    peak = float(np.max(offered)) if offered.size else 0.0
 
-    # Frame and gridlines, labelled on both sides
+    psim.Spacing()
+    if peak <= 0.0:
+        psim.TextDisabled(
+            "Nothing gets through: every scheme in the table loses all its "
+            "blocks at this signal-to-noise ratio, so there is nothing to plot."
+        )
+        return
+
+    psim.TextDisabled(
+        "One bar per modulation and coding scheme, slower and more robust on "
+        "the left. Bar height is what the scheme delivers here."
+    )
+
+    draw_list = psim.GetWindowDrawList()
+    origin = psim.GetCursorScreenPos()
+    available_height = psim.GetContentRegionAvail()[1]
+    plot_height = max(available_height - 40 * scale, 96 * scale)
+    plot_width = max(available_width - 60 * scale, 120 * scale)
+    x0 = origin[0] + 52 * scale
+    y0 = origin[1] + 4 * scale
+
+    grid_color = im_col32(0.55, 0.57, 0.58, 0.22)
+    label_color = im_col32(0.62, 0.64, 0.65, 0.9)
+    bar_color = im_col32(0.28, 0.45, 0.70)
+    lost_color = im_col32(0.62, 0.32, 0.30)
+    axis_format = "%.0f" if peak >= 10.0 else ("%.1f" if peak >= 1.0 else "%.2f")
+
+    # Gridlines, in the single unit the bars are drawn in
     for fraction in (0.0, 0.5, 1.0):
         y = y0 + fraction * plot_height
         draw_list.AddLine((x0, y), (x0 + plot_width, y), grid_color, 1.0)
+        value = axis_format % (peak * (1.0 - fraction))
+        # The top of the scale carries the unit, just under its line so it has
+        # the room; the shortest bars are on that side
         draw_list.AddText(
-            (origin[0], y - 7 * scale),
+            (origin[0], y + (2 if fraction == 0.0 else -7) * scale),
             label_color,
-            f"{peak * (1.0 - fraction):.0f}",
-        )
-        draw_list.AddText(
-            (x0 + plot_width + 6 * scale, y - 7 * scale),
-            label_color,
-            f"{100.0 * (1.0 - fraction):.0f}%",
+            f"{value} Mbit/s" if fraction == 0.0 else value,
         )
 
     step = plot_width / max(len(schemes), 1)
     chosen_index = stats["chosen"]["mcs_index"]
+    mouse_x, mouse_y = psim.GetMousePos()
+    hovered = None
     for i, scheme in enumerate(schemes):
         left = x0 + i * step + 0.15 * step
         right = x0 + (i + 1) * step - 0.15 * step
-        height = throughputs[i] / peak * plot_height
+        top_offered = y0 + (1.0 - offered[i] / peak) * plot_height
+        top_delivered = y0 + (1.0 - delivered[i] / peak) * plot_height
         is_chosen = scheme["mcs_index"] == chosen_index
+        # What the errors take, above what survives them
+        if top_delivered - top_offered > 1.0:
+            draw_list.AddRectFilled(
+                (left, top_offered), (right, top_delivered), lost_color
+            )
         draw_list.AddRectFilled(
-            (left, y0 + plot_height - height),
+            (left, top_delivered),
             (right, y0 + plot_height),
             im_col32(*ACCENT_BRIGHT) if is_chosen else bar_color,
         )
@@ -655,35 +691,46 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
                 im_col32(*ACCENT_BRIGHT) if is_chosen else label_color,
                 str(scheme["mcs_index"]),
             )
+        if left - 0.15 * step <= mouse_x <= right + 0.15 * step:
+            hovered = (scheme, offered[i], delivered[i])
 
-    # Error rate over the same axis, as a fraction of full height
-    curve = np.stack(
-        [
-            x0 + (np.arange(len(schemes)) + 0.5) * step,
-            y0 + (1.0 - np.clip(blers, 0.0, 1.0)) * plot_height,
-        ],
-        axis=1,
-    ).astype(np.float32)
-    draw_list.AddPolyline(np.asfortranarray(curve), bler_color, 0, 2.0 * scale)
+    # Each bar explains itself on hover
+    if (
+        hovered is not None
+        and psim.IsWindowHovered()
+        and y0 <= mouse_y <= y0 + plot_height
+    ):
+        scheme, scheme_offered, scheme_delivered = hovered
+        psim.SetTooltip(
+            f"MCS {scheme['mcs_index']}\n"
+            f"{scheme_delivered:.1f} Mbit/s delivered of {scheme_offered:.1f} "
+            f"Mbit/s attempted\n"
+            f"{scheme['bler']:.1%} of blocks fail their check\n"
+            f"{scheme['bits_per_block']} bits per block"
+        )
 
-    # The target the choice was made against
-    target_y = y0 + (1.0 - min(max(gui.phy_bler_target, 0.0), 1.0)) * plot_height
-    draw_list.AddLine(
-        (x0, target_y),
-        (x0 + plot_width, target_y),
-        (bler_color & 0x00FFFFFF) | (120 << 24),
-        1.2 * scale,
+    legend_y = y0 + plot_height + 15 * scale
+    draw_list.AddRectFilled(
+        (x0, legend_y + 3 * scale),
+        (x0 + 9 * scale, legend_y + 12 * scale),
+        bar_color,
     )
-
     draw_list.AddText(
-        (x0, y0 + plot_height + 15 * scale),
-        label_color,
-        "modulation and coding scheme    "
-        "bars: throughput [Mbit/s, left]    "
-        "line: block error rate [%, right]    "
-        "faint line: target",
+        (x0 + 14 * scale, legend_y), label_color, "delivered"
     )
-    psim.Dummy((available_width, plot_height + 26 * scale))
+    lost_x = x0 + 90 * scale
+    draw_list.AddRectFilled(
+        (lost_x, legend_y + 3 * scale),
+        (lost_x + 9 * scale, legend_y + 12 * scale),
+        lost_color,
+    )
+    draw_list.AddText(
+        (lost_x + 14 * scale, legend_y),
+        label_color,
+        f"lost to block errors        the fastest scheme staying under the "
+        f"{gui.phy_bler_target:.0%} target is used",
+    )
+    psim.Dummy((available_width, plot_height + 40 * scale))
 
 
 def _run_nr_link(gui: "SionnaRtGui") -> dict | None:
