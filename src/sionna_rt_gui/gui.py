@@ -251,6 +251,10 @@ class SionnaRtGui:
         # Index of the visible properties tab, and of the bottom editor
         self.properties_tab: int = 0
         self.bottom_tab: int = 0
+        # Solver work per frame, steered by the measured frame time
+        self._rm_refine_samples: int = 0
+        self.solver_update_delay_s: float = 0.0
+        self.frame_time_target_s: float = 1.0 / 30.0
         # The simulation only runs once started, and can then be paused
         self.simulation_running: bool = False
         self.simulation_started: bool = False
@@ -671,19 +675,23 @@ class SionnaRtGui:
                     self.ray_traced_img, self.ray_traced_depth
                 )
 
+        self.observe_frame_time(psim.GetIO().DeltaTime)
+
         # --- Automatic refinement of the radio map
         if self.simulation_running and self.radio_map is not None:
             if (
                 self.rm_accumulated_samples
                 < self.cfg.radio_map.accumulate_max_samples_per_tx
             ):
-                rm_new = self.compute_radio_map()
+                # Refine with as many samples as fit the frame budget, instead
+                # of a full solve per frame: the map converges just as fast in
+                # wall-clock terms while the interface stays responsive.
+                samples_per_tx = self.rm_refine_samples_per_tx()
+                self._rm_refine_samples = samples_per_tx
+                rm_new = self.compute_radio_map(samples_per_tx=samples_per_tx)
                 if rm_new is not None:
                     self.radio_map._pathgain_map += rm_new.path_gain
-                    self.rm_accumulated_samples += (
-                        self.cfg.radio_map.samples_per_it
-                        // len(self.scene._transmitters)
-                    )
+                    self.rm_accumulated_samples += samples_per_tx
                     # Note: vmin, vmax didn't change so we don't update the colorbar.
                     add_radio_map_to_polyscope(
                         "radio_map",
@@ -797,14 +805,16 @@ class SionnaRtGui:
             "rm_colorbar", "colors"
         ).get_texture_native_id()
 
-    def compute_radio_map(self) -> rt.RadioMap | None:
+    def compute_radio_map(self, samples_per_tx: int | None = None) -> rt.RadioMap | None:
         if not self.scene._transmitters:
             return None
 
         solver = rt.RadioMapSolver()
-        samples_per_tx = self.cfg.radio_map.samples_per_it // len(
-            self.scene._transmitters
-        )
+        if samples_per_tx is None:
+            samples_per_tx = self.cfg.radio_map.samples_per_it // len(
+                self.scene._transmitters
+            )
+        samples_per_tx = max(int(samples_per_tx), 1024)
         return solver(
             self.scene,
             seed=self.frame_i,
@@ -825,6 +835,38 @@ class SionnaRtGui:
             diffraction_lit_region=self.cfg.radio_map.diffraction_lit_region,
         )
 
+    def observe_frame_time(self, frame_time_s: float) -> None:
+        """
+        Steer how much solver work each frame takes, from the frame time itself.
+
+        Timing the solvers directly would mean synchronising with the GPU, which
+        destroys the overlap Dr.Jit relies on and makes everything slower, so the
+        frame time is the signal instead: too slow, ask for less work; comfortably
+        fast, ask for more.
+        """
+        target = self.frame_time_target_s
+        if frame_time_s > target:
+            # Back off quickly
+            self._rm_refine_samples = max(int(self._rm_refine_samples * 0.6), 1024)
+            self.solver_update_delay_s = min(
+                max(self.solver_update_delay_s * 1.5, 0.05), 1.0
+            )
+        elif frame_time_s < 0.7 * target:
+            # Creep back up
+            self._rm_refine_samples = int(self._rm_refine_samples * 1.2)
+            self.solver_update_delay_s = max(self.solver_update_delay_s * 0.8, 0.0)
+
+    def rm_refine_samples_per_tx(self) -> int:
+        """Samples per transmitter for one refinement step, within the budget."""
+        configured = max(
+            self.cfg.radio_map.samples_per_it // max(len(self.scene._transmitters), 1),
+            1024,
+        )
+        if self._rm_refine_samples <= 0:
+            # Start modestly; observe_frame_time grows this if there is headroom
+            self._rm_refine_samples = min(configured, 500_000)
+        return int(min(self._rm_refine_samples, configured))
+
     def has_visible_radio_map(self) -> tuple[bool, ps.SurfaceMesh]:
         rm_struct = None
         if ps.has_surface_mesh("radio_map"):
@@ -838,10 +880,14 @@ class SionnaRtGui:
     # ------------------------
 
     def update_paths(self, clear_first: bool = False, show: bool = True):
-        # Optionally throttle path computations to reduce load
+        # Throttle path computations: never spend more than a third of the time
+        # solving paths, using what the last solve actually cost.
         current_time = time.time()
         time_since_last_update = current_time - self._last_paths_update_time
-        if time_since_last_update < self.cfg.paths.min_update_delay_s:
+        minimum_delay = max(
+            self.cfg.paths.min_update_delay_s, self.solver_update_delay_s
+        )
+        if time_since_last_update < minimum_delay:
             # Skip this update
             return
 
@@ -849,7 +895,7 @@ class SionnaRtGui:
             self.clear_paths()
 
         self.paths = self.compute_paths()
-        self._last_paths_update_time = current_time
+        self._last_paths_update_time = time.time()
         if self.paths is None:
             return
 
@@ -2384,6 +2430,24 @@ class SionnaRtGui:
                 )
             needs_update |= changed
 
+            property_row("Frame time target [ms]", self.ui_scale)
+            changed, target_ms = psim.SliderFloat(
+                "##rm_frame_budget",
+                self.frame_time_target_s * 1000.0,
+                16.0,
+                250.0,
+                format="%.0f",
+            )
+            end_property_row()
+            if changed:
+                self.frame_time_target_s = target_ms / 1000.0
+            if psim.IsItemHovered():
+                psim.SetTooltip(
+                    "How long a frame may take while the radio map refines.\n"
+                    "Lower keeps the interface responsive; higher lets the\n"
+                    "solver work in bigger batches, which converges faster."
+                )
+
             property_row("Samples per iteration", self.ui_scale)
             changed, self.cfg.radio_map.log_samples_per_it = psim.SliderFloat(
                 "##rm_samples",
@@ -2800,7 +2864,7 @@ class SionnaRtGui:
 
             # Right-aligned actions, sized from their actual labels so the
             # last one is never clipped
-            labels = ["Save view", "Floating panels", "?"]
+            labels = ["Save view", "?"]
             style = psim.GetStyle()
             widths = [
                 psim.CalcTextSize(label)[0] + 2 * style.FramePadding[0]
@@ -2823,14 +2887,6 @@ class SionnaRtGui:
                 psim.SetTooltip("Save a PNG screenshot of the current view")
             psim.SameLine()
             if psim.Button(f"{labels[1]}##topbar"):
-                self.set_docked_layout(False)
-            if psim.IsItemHovered():
-                psim.SetTooltip(
-                    "Switch to floating windows. The top bar button there\n"
-                    "brings these docked panels back."
-                )
-            psim.SameLine()
-            if psim.Button(f"{labels[2]}##topbar"):
                 self.cfg.show_help_window = not self.cfg.show_help_window
             if psim.IsItemHovered():
                 psim.SetTooltip("Controls & shortcuts (H)")
@@ -2968,18 +3024,45 @@ class SionnaRtGui:
                     if changed:
                         struct.set_enabled(enabled)
                     psim.SameLine()
-                    psim.Text(child)
+                    if psim.TreeNodeEx(child):
+                        changed, color = psim.ColorEdit3(
+                            "Color##outliner",
+                            struct.get_color(),
+                            psim.ImGuiColorEditFlags_NoInputs,
+                        )
+                        if changed:
+                            struct.set_color(color)
+                        psim.PushItemWidth(-90 * scale)
+                        changed, transparency = psim.SliderFloat(
+                            "Opacity##outliner", struct.get_transparency(), 0.05, 1.0
+                        )
+                        if changed:
+                            struct.set_transparency(transparency)
+                        if ps.has_point_cloud(child):
+                            changed, radius = psim.SliderFloat(
+                                "Radius##outliner",
+                                struct.get_radius(relative=False),
+                                0.1,
+                                20.0,
+                            )
+                            if changed:
+                                struct.set_radius(radius, relative=False)
+                        psim.PopItemWidth()
+                        psim.TreePop()
                     psim.PopID()
                 psim.TreePop()
 
             psim.Dummy((0.0, 4 * scale))
+            psim.PushStyleColor(psim.ImGuiCol_Text, (0.45, 0.45, 0.45, 1.0))
             changed, self.cfg.show_polyscope_gui = psim.Checkbox(
-                "Polyscope panels", self.cfg.show_polyscope_gui
+                "Advanced: viewer panels", self.cfg.show_polyscope_gui
             )
+            psim.PopStyleColor()
             if psim.IsItemHovered():
                 psim.SetTooltip(
-                    "Show Polyscope's own windows on top, for the few\n"
-                    "controls not mirrored here (they place themselves)."
+                    "Opens the viewer's own windows on top of this layout.\n"
+                    "They place themselves and will overlap the panels, so\n"
+                    "only turn this on for a control missing from here."
                 )
             if changed:
                 ps.set_build_default_gui_panels(self.cfg.show_polyscope_gui)
