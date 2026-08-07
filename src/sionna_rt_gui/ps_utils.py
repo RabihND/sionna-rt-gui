@@ -76,80 +76,116 @@ def supports_direct_update_from_device() -> bool:
     return "cuda" in mi.variant()
 
 
+# NVIDIA green accent, shared by the theme and custom-drawn UI elements.
+ACCENT = (0.46, 0.73, 0.00)
+ACCENT_BRIGHT = (0.58, 0.85, 0.12)
+ACCENT_DIM = (0.30, 0.46, 0.04)
+
+
+def im_col32(r: float, g: float, b: float, a: float = 1.0) -> int:
+    """Pack a float RGBA color into the packed 32-bit format used by ImDrawList."""
+    return (
+        (int(a * 255) << 24) | (int(b * 255) << 16) | (int(g * 255) << 8) | int(r * 255)
+    )
+
+
 def set_custom_imgui_style():
     def style_cb():
         """
-        Theme is "Bess Dark" from @shivang51, released under MIT license:
-        https://github.com/shivang51/bess/blob/a74d78e78ee4678b03582181905e00c1094c3d18/src/Bess/src/settings/themes.cpp
-        Includes minor modifications.
+        Neutral graphite theme with a single NVIDIA-green accent (#76B900),
+        reserved for interactive state: checkmarks, slider grabs, active
+        headers/tabs and selections. Surfaces stay quiet so the accent and
+        the rendered scene carry the color.
         """
         style = psim.GetStyle()
 
-        style.WindowRounding = 3.0
-        style.FrameRounding = 3.0
+        style.WindowRounding = 6.0
+        style.FrameRounding = 4.0
         style.GrabRounding = 3.0
-        style.TabRounding = 3.0
-        style.PopupRounding = 3.0
-        style.ScrollbarRounding = 3.0
-        style.WindowPadding = (8, 8)
-        style.FramePadding = (6, 4)
-        style.ItemSpacing = (8, 6)
-        style.PopupBorderSize = 0.0
+        style.TabRounding = 4.0
+        style.PopupRounding = 4.0
+        style.ScrollbarRounding = 6.0
+        style.WindowPadding = (12, 12)
+        style.FramePadding = (8, 5)
+        style.ItemSpacing = (8, 7)
+        style.ItemInnerSpacing = (6, 4)
+        style.IndentSpacing = 18.0
+        style.GrabMinSize = 12.0
+        style.ScrollbarSize = 12.0
+        style.WindowBorderSize = 1.0
+        style.FrameBorderSize = 0.0
+        style.PopupBorderSize = 1.0
+        style.WindowTitleAlign = (0.0, 0.5)
 
         style.ScaleAllSizes(ps.get_ui_scale())
 
-        # Primary background
-        style.Colors[psim.ImGuiCol_WindowBg] = (0.07, 0.07, 0.09, 1.00)
-        style.Colors[psim.ImGuiCol_MenuBarBg] = (0.12, 0.12, 0.15, 1.00)
+        # NVIDIA green accent tiers
+        accent = ACCENT
+        accent_bright = ACCENT_BRIGHT
+        accent_dim = ACCENT_DIM
 
-        style.Colors[psim.ImGuiCol_PopupBg] = (0.18, 0.18, 0.22, 1.00)
+        # Primary background (slightly translucent over the 3D scene)
+        style.Colors[psim.ImGuiCol_WindowBg] = (0.094, 0.098, 0.102, 0.97)
+        style.Colors[psim.ImGuiCol_ChildBg] = (0.00, 0.00, 0.00, 0.00)
+        style.Colors[psim.ImGuiCol_MenuBarBg] = (0.125, 0.13, 0.135, 1.00)
+
+        style.Colors[psim.ImGuiCol_PopupBg] = (0.13, 0.135, 0.14, 0.98)
 
         # Headers
-        style.Colors[psim.ImGuiCol_Header] = (0.18, 0.18, 0.22, 1.00)
-        style.Colors[psim.ImGuiCol_HeaderHovered] = (0.30, 0.30, 0.40, 1.00)
-        style.Colors[psim.ImGuiCol_HeaderActive] = (0.25, 0.25, 0.35, 1.00)
+        style.Colors[psim.ImGuiCol_Header] = (0.165, 0.17, 0.175, 1.00)
+        style.Colors[psim.ImGuiCol_HeaderHovered] = (0.215, 0.225, 0.23, 1.00)
+        style.Colors[psim.ImGuiCol_HeaderActive] = (*accent_dim, 0.80)
 
         # Buttons
-        style.Colors[psim.ImGuiCol_Button] = (0.20, 0.22, 0.27, 1.00)
-        style.Colors[psim.ImGuiCol_ButtonHovered] = (0.30, 0.32, 0.40, 1.00)
-        style.Colors[psim.ImGuiCol_ButtonActive] = (0.35, 0.38, 0.50, 1.00)
+        style.Colors[psim.ImGuiCol_Button] = (0.20, 0.21, 0.22, 1.00)
+        style.Colors[psim.ImGuiCol_ButtonHovered] = (0.265, 0.275, 0.285, 1.00)
+        style.Colors[psim.ImGuiCol_ButtonActive] = (*accent_dim, 1.00)
 
         # Frame BG
-        style.Colors[psim.ImGuiCol_FrameBg] = (0.15, 0.15, 0.18, 1.00)
-        style.Colors[psim.ImGuiCol_FrameBgHovered] = (0.22, 0.22, 0.27, 1.00)
-        style.Colors[psim.ImGuiCol_FrameBgActive] = (0.25, 0.25, 0.30, 1.00)
+        style.Colors[psim.ImGuiCol_FrameBg] = (0.165, 0.17, 0.18, 1.00)
+        style.Colors[psim.ImGuiCol_FrameBgHovered] = (0.21, 0.22, 0.23, 1.00)
+        style.Colors[psim.ImGuiCol_FrameBgActive] = (0.245, 0.255, 0.265, 1.00)
 
         # Tabs
-        style.Colors[psim.ImGuiCol_Tab] = (0.18, 0.18, 0.22, 1.00)
-        style.Colors[psim.ImGuiCol_TabHovered] = (0.35, 0.35, 0.50, 1.00)
-        style.Colors[psim.ImGuiCol_TabUnfocused] = (0.13, 0.13, 0.17, 1.00)
-        style.Colors[psim.ImGuiCol_TabUnfocusedActive] = (0.20, 0.20, 0.25, 1.00)
+        style.Colors[psim.ImGuiCol_Tab] = (0.15, 0.155, 0.16, 1.00)
+        style.Colors[psim.ImGuiCol_TabHovered] = (0.24, 0.25, 0.26, 1.00)
+        style.Colors[psim.ImGuiCol_TabActive] = (*accent_dim, 1.00)
+        style.Colors[psim.ImGuiCol_TabUnfocused] = (0.12, 0.125, 0.13, 1.00)
+        style.Colors[psim.ImGuiCol_TabUnfocusedActive] = (0.19, 0.20, 0.205, 1.00)
 
-        # Title
-        style.Colors[psim.ImGuiCol_TitleBg] = (0.12, 0.12, 0.15, 1.00)
-        style.Colors[psim.ImGuiCol_TitleBgActive] = (0.15, 0.15, 0.20, 1.00)
-        style.Colors[psim.ImGuiCol_TitleBgCollapsed] = (0.10, 0.10, 0.12, 1.00)
+        # Title bars blend into the window body for a seamless panel look.
+        style.Colors[psim.ImGuiCol_TitleBg] = (0.094, 0.098, 0.102, 1.00)
+        style.Colors[psim.ImGuiCol_TitleBgActive] = (0.115, 0.125, 0.115, 1.00)
+        style.Colors[psim.ImGuiCol_TitleBgCollapsed] = (0.094, 0.098, 0.102, 0.90)
 
         # Borders
-        style.Colors[psim.ImGuiCol_Border] = (0.20, 0.20, 0.25, 0.50)
+        style.Colors[psim.ImGuiCol_Border] = (0.28, 0.29, 0.30, 0.45)
         style.Colors[psim.ImGuiCol_BorderShadow] = (0.00, 0.00, 0.00, 0.00)
 
+        # Separators
+        style.Colors[psim.ImGuiCol_Separator] = (0.26, 0.27, 0.28, 0.60)
+        style.Colors[psim.ImGuiCol_SeparatorHovered] = (*accent, 0.60)
+        style.Colors[psim.ImGuiCol_SeparatorActive] = (*accent, 1.00)
+
         # Text
-        style.Colors[psim.ImGuiCol_Text] = (0.90, 0.90, 0.95, 1.00)
-        style.Colors[psim.ImGuiCol_TextDisabled] = (0.50, 0.50, 0.55, 1.00)
+        style.Colors[psim.ImGuiCol_Text] = (0.92, 0.93, 0.93, 1.00)
+        style.Colors[psim.ImGuiCol_TextDisabled] = (0.55, 0.57, 0.58, 1.00)
+        style.Colors[psim.ImGuiCol_TextSelectedBg] = (*accent, 0.35)
 
         # Highlights
-        style.Colors[psim.ImGuiCol_CheckMark] = (0.50, 0.70, 1.00, 1.00)
-        style.Colors[psim.ImGuiCol_SliderGrab] = (0.50, 0.70, 1.00, 1.00)
-        style.Colors[psim.ImGuiCol_SliderGrabActive] = (0.60, 0.80, 1.00, 1.00)
-        style.Colors[psim.ImGuiCol_ResizeGrip] = (0.50, 0.70, 1.00, 0.50)
-        style.Colors[psim.ImGuiCol_ResizeGripHovered] = (0.60, 0.80, 1.00, 0.75)
-        style.Colors[psim.ImGuiCol_ResizeGripActive] = (0.70, 0.90, 1.00, 1.00)
+        style.Colors[psim.ImGuiCol_CheckMark] = (*accent_bright, 1.00)
+        style.Colors[psim.ImGuiCol_SliderGrab] = (*accent, 1.00)
+        style.Colors[psim.ImGuiCol_SliderGrabActive] = (*accent_bright, 1.00)
+        style.Colors[psim.ImGuiCol_ResizeGrip] = (*accent, 0.40)
+        style.Colors[psim.ImGuiCol_ResizeGripHovered] = (*accent, 0.70)
+        style.Colors[psim.ImGuiCol_ResizeGripActive] = (*accent_bright, 1.00)
+        style.Colors[psim.ImGuiCol_NavHighlight] = (*accent, 1.00)
+        style.Colors[psim.ImGuiCol_DragDropTarget] = (*accent_bright, 0.90)
 
         # Scrollbar
-        style.Colors[psim.ImGuiCol_ScrollbarBg] = (0.10, 0.10, 0.12, 1.00)
-        style.Colors[psim.ImGuiCol_ScrollbarGrab] = (0.30, 0.30, 0.35, 1.00)
-        style.Colors[psim.ImGuiCol_ScrollbarGrabHovered] = (0.40, 0.40, 0.50, 1.00)
-        style.Colors[psim.ImGuiCol_ScrollbarGrabActive] = (0.45, 0.45, 0.55, 1.00)
+        style.Colors[psim.ImGuiCol_ScrollbarBg] = (0.09, 0.095, 0.10, 0.60)
+        style.Colors[psim.ImGuiCol_ScrollbarGrab] = (0.28, 0.29, 0.30, 1.00)
+        style.Colors[psim.ImGuiCol_ScrollbarGrabHovered] = (0.36, 0.37, 0.38, 1.00)
+        style.Colors[psim.ImGuiCol_ScrollbarGrabActive] = (0.44, 0.45, 0.46, 1.00)
 
     ps.set_configure_imgui_style_callback(style_cb)
