@@ -16,6 +16,8 @@ from sionna.rt.utils.geometry import rotation_matrix
 
 from .animation import trajectory_gui
 from .config import DEFAULT_SLICE_PLANE_NAME
+from .pattern_viz import default_pattern_scale, update_antenna_pattern_structure
+from .ps_utils import ACCENT_BRIGHT
 from .sionna_utils import set_or_update_radio_devices_polyscope
 
 
@@ -45,7 +47,7 @@ def selection_gui(
 
     # Place window in the top-right corner of the screen
     window_resolution = ps.get_window_size()
-    w, h = 375, 480
+    w, h = 430, 540
     psim.SetNextWindowSize(
         (w * gui.ui_scale, h * gui.ui_scale), psim.ImGuiCond_FirstUseEver
     )
@@ -56,7 +58,12 @@ def selection_gui(
     )
     psim.SetNextWindowPos(window_pos, psim.ImGuiCond_FirstUseEver)
 
-    _, keep_selection = psim.Begin("Selection##sionna", open=True)
+    # Dynamic title: show what is selected (the "###" suffix keeps the
+    # window identity stable while the visible title changes).
+    object_name = getattr(selected_object, "name", "")
+    _, keep_selection = psim.Begin(
+        f"{selected_type.value}: {object_name}###sionna_selection", open=True
+    )
 
     if not keep_selection:
         psim.End()
@@ -71,7 +78,7 @@ def selection_gui(
         pattern = array.antenna_pattern
 
         changed, rd.color = psim.ColorEdit3(
-            f"{selected_type.value} '{selected_object.name}'\n",
+            "Color##selection",
             rd.color,
             psim.ImGuiColorEditFlags_NoInputs,
         )
@@ -97,13 +104,106 @@ def selection_gui(
         if psim.TreeNodeEx(
             "Characteristics:##selection", psim.ImGuiTreeNodeFlags_DefaultOpen
         ):
-            psim.Text(
-                f"Position [m]: {vec_str(rd.position.numpy())}\n"
-                f"Orientation (angles): {vec_str(rd.orientation.numpy())}\n"
-                f"Velocity [m/s]: {vec_str(rd.velocity.numpy())}\n"
-                + (f"Transmit power [W]: {rd.power[0]:.2f}\n" if is_transmitter else "")
+            # Reserve room for the widget labels, which would otherwise be
+            # clipped when the window is narrow.
+            psim.PushItemWidth(-140 * gui.ui_scale)
+            position = rd.position.numpy().squeeze()
+            changed, new_position = psim.DragFloat3(
+                "Position [m]##selection", tuple(position), 0.25, format="%.2f"
             )
+            if changed:
+                rd.position = mi.Point3f(*new_position)
+                dr.make_opaque(rd.position)
+                rd_update_needed = True
+
+            orientation_deg = np.degrees(rd.orientation.numpy().squeeze())
+            changed, new_orientation = psim.DragFloat3(
+                "Orientation [deg]##selection",
+                tuple(orientation_deg),
+                1.0,
+                format="%.1f",
+            )
+            if changed:
+                # Note: mi.Point3f rejects numpy scalar types, convert to float
+                rd.orientation = mi.Point3f(*np.radians(new_orientation).tolist())
+                dr.make_opaque(rd.orientation)
+                rd_update_needed = True
+
+            if is_transmitter:
+                power_dbm = float(rd.power_dbm[0])
+                changed, new_power_dbm = psim.SliderFloat(
+                    "TX power [dBm]##selection",
+                    power_dbm,
+                    -20.0,
+                    60.0,
+                    format="%.1f",
+                )
+                if changed:
+                    rd.power_dbm = new_power_dbm
+                    rd_update_needed = True
+                if psim.IsItemHovered():
+                    watts = 10.0 ** (power_dbm / 10.0) / 1000.0
+                    psim.SetTooltip(f"{watts:.3g} W")
+
+            velocity = rd.velocity.numpy().squeeze()
+            changed, new_velocity = psim.DragFloat3(
+                "Velocity [m/s]##selection",
+                tuple(velocity),
+                0.1,
+                format="%.2f",
+            )
+            if changed:
+                rd.velocity = mi.Vector3f(*[float(v) for v in new_velocity])
+                dr.make_opaque(rd.velocity)
+                rd_update_needed = True
+            if psim.IsItemHovered():
+                psim.SetTooltip(
+                    "World-space velocity vector, used for Doppler.\n"
+                    "Independent of the orientation. While a trajectory\n"
+                    "plays, it is overwritten with the travel velocity."
+                )
+            psim.PopItemWidth()
             psim.TreePop()
+
+        # --- Attach the device to a scene object (e.g. a vehicle)
+        object_names = ["(none)"] + list(gui.scene.objects.keys())
+        attachment = gui.attachments.get(rd.name)
+        current_index = 0
+        if attachment is not None and attachment["object"] in object_names:
+            current_index = object_names.index(attachment["object"])
+        psim.PushItemWidth(-140 * gui.ui_scale)
+        changed, new_index = psim.Combo(
+            "Attach to object##selection", current_index, object_names
+        )
+        psim.PopItemWidth()
+        if psim.IsItemHovered():
+            psim.SetTooltip(
+                "Snap the device on top of a scene object. The object then\n"
+                "follows the device: give the device a trajectory and the\n"
+                "object drives along with it (physics included)."
+            )
+        if changed:
+            gui.attach_device_to_object(
+                rd, None if new_index == 0 else object_names[new_index]
+            )
+            rd_update_needed = True
+
+        if gui.attach_pick_pending == rd.name:
+            hovered = gui.attach_hover_name
+            psim.TextColored(
+                (*ACCENT_BRIGHT, 1.0),
+                f"Click to attach to '{hovered}' (Esc to cancel)"
+                if hovered
+                else "Hover an object in the 3D scene (Esc to cancel)",
+            )
+        else:
+            if psim.Button("Pick object in scene##attach"):
+                gui.start_attach_pick(rd.name)
+            if psim.IsItemHovered():
+                psim.SetTooltip(
+                    "Then click the object (e.g. a car) directly in the\n"
+                    "3D view. The device snaps just above the clicked point."
+                )
 
         psim.Spacing()
         if psim.TreeNodeEx(
@@ -115,13 +215,58 @@ def selection_gui(
                 f"Pattern: {type(pattern).__name__}\n"
             )
 
+            changed, gui.show_antenna_pattern = psim.Checkbox(
+                "Show 3D radiation pattern##antenna",
+                getattr(gui, "show_antenna_pattern", False),
+            )
+            if psim.IsItemHovered():
+                psim.SetTooltip(
+                    "Radiation pattern of a single antenna element, drawn\n"
+                    "at the device: radius is the linear gain, color is\n"
+                    "the gain in dB. Follows the device's orientation."
+                )
+            if gui.show_antenna_pattern:
+                psim.PushItemWidth(-140 * gui.ui_scale)
+                if gui.antenna_pattern_scale <= 0.0:
+                    gui.antenna_pattern_scale = default_pattern_scale(gui)
+                _, gui.antenna_pattern_scale = psim.SliderFloat(
+                    "Pattern size [m]##antenna",
+                    gui.antenna_pattern_scale,
+                    1.0,
+                    max(4.0 * default_pattern_scale(gui), 60.0),
+                    format="%.1f",
+                    flags=psim.ImGuiSliderFlags_Logarithmic,
+                )
+                psim.PopItemWidth()
+                _, gui.antenna_pattern_db_radius = psim.Checkbox(
+                    "Radius in dB##antenna",
+                    getattr(gui, "antenna_pattern_db_radius", False),
+                )
+                if psim.IsItemHovered():
+                    psim.SetTooltip(
+                        "Radius proportional to gain in dB (40 dB range),\n"
+                        "like MATLAB's pattern(): weak side lobes become\n"
+                        "visible. Off: radius is the linear gain, as in\n"
+                        "sionna.rt's AntennaPattern.show()."
+                    )
+
+            _, gui.show_pattern_cuts = psim.Checkbox(
+                "Show 2D pattern cuts##antenna",
+                getattr(gui, "show_pattern_cuts", False),
+            )
+            if psim.IsItemHovered():
+                psim.SetTooltip(
+                    "Polar charts of the vertical and horizontal gain\n"
+                    "cuts, like sionna.rt's AntennaPattern.show()."
+                )
+
             psim.TreePop()
 
         psim.Spacing()
         if psim.TreeNodeEx(
             "Animation:##selection", psim.ImGuiTreeNodeFlags_DefaultOpen
         ):
-            trajectory_gui(gui, selected_object)
+            rd_update_needed |= trajectory_gui(gui, selected_object)
             psim.TreePop()
 
         # --- Transformation gizmo
@@ -165,10 +310,19 @@ def selection_gui(
 
             gui.prev_gizmo_to_world = to_world
 
+            # Antenna pattern preview, following the device's pose
+            update_antenna_pattern_structure(
+                gui, rd, array, getattr(gui, "show_antenna_pattern", False)
+            )
+
     psim.Spacing()
 
     if rd_update_needed:
         # TODO: auto-pause animation if animated object was moved?
+
+        if gui.selected_object is not None:
+            # Carry along any scene object attached to this device
+            gui.update_attached_object(gui.selected_object)
 
         set_or_update_radio_devices_polyscope(
             gui.scene.transmitters if is_transmitter else gui.scene.receivers,
