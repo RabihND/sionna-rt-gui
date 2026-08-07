@@ -140,6 +140,96 @@ def link_budget(gui: "SionnaRtGui", rx_index: int = 0, tx_index: int = 0) -> dic
     return result
 
 
+def link_simulation(gui: "SionnaRtGui", rx_index: int = 0, tx_index: int = 0) -> dict | None:
+    """
+    Send symbols through the traced channel with real noise added.
+
+    sionna-rt provides the channel and the noise power but not a transmission
+    chain (that lives in the sionna PHY package, which is not installed here), so
+    the frequency response is built from the path coefficients, complex Gaussian
+    noise is drawn at the computed noise power, and what a zero-forcing receiver
+    would see is measured directly.
+    """
+    if gui.paths_cir is None:
+        return None
+    a, tau = gui.paths_cir
+    if a.shape[0] <= rx_index or a.shape[2] <= tx_index:
+        return None
+
+    coefficients = a[rx_index, 0, tx_index, 0, :, 0]
+    delays = (
+        tau[rx_index, tx_index, :] if tau.ndim == 3 else tau[rx_index, 0, tx_index, 0, :]
+    )
+    valid = (delays >= 0.0) & (np.abs(coefficients) > 0.0)
+    coefficients, delays = coefficients[valid], delays[valid]
+    if coefficients.size == 0:
+        return {"paths": 0}
+
+    paths_cfg = gui.cfg.paths
+    n_subcarriers = min(max(int(paths_cfg.fft_size), 64), 2048)
+    spacing = float(paths_cfg.subcarrier_spacing)
+    bandwidth = n_subcarriers * spacing
+
+    # Frequency response of the traced channel across the OFDM grid
+    frequencies = (np.arange(n_subcarriers) - n_subcarriers // 2) * spacing
+    response = np.exp(
+        -2j * np.pi * frequencies[:, None] * delays[None, :]
+    ) @ coefficients
+
+    # Powers per subcarrier: the transmitter's power and the noise floor are
+    # both spread over the grid
+    tx_power_w = 10.0 ** (float(gui.link_budget_tx_power_dbm(tx_index)) / 10.0) / 1000.0
+    thermal_w = float(gui.scene.thermal_noise_power[0]) * 10.0 ** (
+        gui.cfg.noise_figure_db / 10.0
+    )
+    signal = tx_power_w / n_subcarriers * np.abs(response) ** 2
+    noise_per_subcarrier = thermal_w / n_subcarriers
+    snr = signal / max(noise_per_subcarrier, 1e-30)
+
+    # Actual noise, actually added: 16-QAM symbols through the channel and a
+    # zero-forcing receiver, so the numbers come from samples and not a formula
+    rng = np.random.default_rng(gui.cfg.paths.seed)
+    levels = np.array([-3.0, -1.0, 1.0, 3.0])
+    symbols = (
+        rng.choice(levels, n_subcarriers) + 1j * rng.choice(levels, n_subcarriers)
+    ) / np.sqrt(10.0)
+    scale = np.sqrt(tx_power_w / n_subcarriers)
+    noise = np.sqrt(noise_per_subcarrier / 2.0) * (
+        rng.standard_normal(n_subcarriers) + 1j * rng.standard_normal(n_subcarriers)
+    )
+    received = scale * response * symbols + noise
+    equalised = received / (scale * response)
+    error = equalised - symbols
+    evm = float(np.sqrt(np.mean(np.abs(error) ** 2) / np.mean(np.abs(symbols) ** 2)))
+
+    # Nearest-constellation-point decisions, to count real symbol errors
+    def quantise(values):
+        return levels[np.argmin(np.abs(values[:, None] - levels[None, :]), axis=1)]
+
+    decided = (
+        quantise(equalised.real * np.sqrt(10.0))
+        + 1j * quantise(equalised.imag * np.sqrt(10.0))
+    ) / np.sqrt(10.0)
+    symbol_errors = int(np.count_nonzero(~np.isclose(decided, symbols, atol=1e-6)))
+
+    capacity_bps = float(np.sum(np.log2(1.0 + snr)) * spacing)
+    return {
+        "paths": int(coefficients.size),
+        "subcarriers": n_subcarriers,
+        "bandwidth_mhz": bandwidth / 1e6,
+        "snr_mean_db": float(10.0 * np.log10(np.mean(snr))),
+        "snr_min_db": float(10.0 * np.log10(np.min(snr))),
+        "snr_max_db": float(10.0 * np.log10(np.max(snr))),
+        "flatness_db": float(
+            10.0 * np.log10(np.max(np.abs(response) ** 2) / np.min(np.abs(response) ** 2))
+        ),
+        "capacity_mbps": capacity_bps / 1e6,
+        "evm_percent": 100.0 * evm,
+        "symbol_errors": symbol_errors,
+        "symbol_error_rate": symbol_errors / n_subcarriers,
+    }
+
+
 def refresh_statistics(gui: "SionnaRtGui", force: bool = False) -> None:
     """Recompute the cached readouts, at most every REFRESH_INTERVAL_S."""
     now = time.time()
@@ -148,6 +238,7 @@ def refresh_statistics(gui: "SionnaRtGui", force: bool = False) -> None:
     gui._statistics_time = now
     gui.radio_map_stats = radio_map_statistics(gui)
     gui.link_budget_stats = link_budget(gui, *reversed(gui.cir_pair))
+    gui.link_simulation_stats = link_simulation(gui, *reversed(gui.cir_pair))
 
 
 def noise_contents(gui: "SionnaRtGui") -> None:
@@ -330,3 +421,38 @@ def link_budget_contents(gui: "SionnaRtGui") -> None:
     psim.PopTextWrapPos()
     if psim.Button("Refresh##link_budget"):
         refresh_statistics(gui, force=True)
+
+
+def link_simulation_contents(gui: "SionnaRtGui") -> None:
+    """What a receiver would actually see, with noise added to the symbols."""
+    if not gui.cfg.paths.compute_cir:
+        psim.TextDisabled("Enable the channel impulse response first.")
+        return
+    refresh_statistics(gui)
+    stats = gui.link_simulation_stats
+    if stats is None or stats.get("paths", 0) == 0:
+        psim.TextDisabled("No paths to transmit through.")
+        return
+
+    psim.PushTextWrapPos(0.0)
+    psim.TextColored(
+        (*ACCENT_BRIGHT, 1.0),
+        f"{stats['capacity_mbps']:.1f} Mbit/s over {stats['bandwidth_mhz']:.1f} MHz",
+    )
+    psim.TextDisabled("Shannon capacity of the traced channel with this noise floor")
+    psim.Spacing()
+    psim.Text(
+        f"SNR per subcarrier: mean {stats['snr_mean_db']:.1f} dB, "
+        f"{stats['snr_min_db']:.1f} to {stats['snr_max_db']:.1f} dB"
+    )
+    psim.Text(f"Frequency selectivity: {stats['flatness_db']:.1f} dB across the band")
+    psim.Spacing()
+    psim.Text(
+        f"16-QAM with noise added: EVM {stats['evm_percent']:.2f}%, "
+        f"{stats['symbol_errors']} of {stats['subcarriers']} symbols wrong"
+    )
+    psim.TextDisabled(
+        "Noise is drawn at the computed floor and added to the symbols, then a "
+        "zero-forcing receiver decides: these are measured, not predicted."
+    )
+    psim.PopTextWrapPos()

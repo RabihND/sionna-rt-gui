@@ -45,17 +45,35 @@ def transmitter(draw_list, x, y, size, color, scale=1.0):
 
 
 def receiver(draw_list, x, y, size, color, scale=1.0):
-    """A handset: a rounded rectangle with a small antenna."""
-    left, right = x + size * 0.34, x + size * 0.66
-    top, bottom = y + size * 0.34, y + size * 0.86
-    draw_list.AddRect((left, top), (right, bottom), color, size * 0.08, 0, 1.6 * scale)
-    draw_list.AddLine(
-        (right - size * 0.04, top),
-        (x + size * 0.80, y + size * 0.16),
-        color,
-        1.6 * scale,
+    """A handset with a screen, and arcs arriving at its top corner."""
+    left, right = x + size * 0.16, x + size * 0.52
+    top, bottom = y + size * 0.32, y + size * 0.88
+    draw_list.AddRect((left, top), (right, bottom), color, size * 0.07, 0, 1.6 * scale)
+    # Screen
+    draw_list.AddRect(
+        (left + size * 0.05, top + size * 0.06),
+        (right - size * 0.05, bottom - size * 0.12),
+        (color & 0x00FFFFFF) | (130 << 24),
+        size * 0.02,
+        0,
+        1.2 * scale,
     )
-    draw_list.AddCircleFilled((x + size * 0.80, y + size * 0.16), size * 0.07, color)
+    # Home button
+    draw_list.AddCircleFilled(
+        (0.5 * (left + right), bottom - size * 0.06), size * 0.028, color
+    )
+    # Incoming signal: arcs centred on the top right corner
+    corner = (right - size * 0.02, top + size * 0.02)
+    angles = np.linspace(-np.pi * 0.52, 0.02, 14)
+    for i, radius in enumerate((0.17, 0.28, 0.39)):
+        alpha = 1.0 - 0.2 * i
+        arc = [
+            (corner[0] + size * radius * np.cos(a), corner[1] + size * radius * np.sin(a))
+            for a in angles
+        ]
+        _polyline(
+            draw_list, arc, (color & 0x00FFFFFF) | (int(255 * alpha) << 24), 1.4 * scale
+        )
 
 
 def car(draw_list, x, y, size, color, scale=1.0):
@@ -119,12 +137,30 @@ def drone(draw_list, x, y, size, color, scale=1.0):
 
 
 def tree(draw_list, x, y, size, color, scale=1.0):
-    """A trunk with a round canopy."""
+    """A trunk with a lobed canopy, and a hint of branches."""
     cx = x + size * 0.5
+    trunk_top = y + size * 0.60
+    draw_list.AddLine((cx, y + size * 0.88), (cx, trunk_top), color, 1.9 * scale)
+    # Branches
     draw_list.AddLine(
-        (cx, y + size * 0.86), (cx, y + size * 0.56), color, 1.8 * scale
+        (cx, y + size * 0.70), (x + size * 0.34, y + size * 0.58), color, 1.3 * scale
     )
-    draw_list.AddCircle((cx, y + size * 0.42), size * 0.22, color, 20, 1.6 * scale)
+    draw_list.AddLine(
+        (cx, y + size * 0.74), (x + size * 0.66, y + size * 0.62), color, 1.3 * scale
+    )
+    # Canopy: three overlapping lobes read as foliage where a circle does not
+    for offset_x, offset_y, radius in (
+        (-0.15, 0.44, 0.15),
+        (0.15, 0.44, 0.15),
+        (0.0, 0.30, 0.18),
+    ):
+        draw_list.AddCircle(
+            (cx + size * offset_x, y + size * offset_y),
+            size * radius,
+            color,
+            18,
+            1.5 * scale,
+        )
 
 
 def wall(draw_list, x, y, size, color, scale=1.0):
@@ -213,7 +249,32 @@ def paths(draw_list, x, y, size, color, scale=1.0):
 
 
 def antenna(draw_list, x, y, size, color, scale=1.0):
-    """A main lobe with a small back lobe, as on a pattern plot."""
+    """
+    A polar pattern plot: dB rings with a lobe drawn on them, which is what the
+    antenna pattern view actually shows.
+    """
+    cx, cy = x + size * 0.5, y + size * 0.52
+    outer = size * 0.40
+    # Rings and axes of the polar grid
+    faint = (color & 0x00FFFFFF) | (110 << 24)
+    for ring in (0.45, 0.75, 1.0):
+        draw_list.AddCircle((cx, cy), outer * ring, faint, 22, 1.1 * scale)
+    draw_list.AddLine((cx - outer, cy), (cx + outer, cy), faint, 1.0 * scale)
+    draw_list.AddLine((cx, cy - outer), (cx, cy + outer), faint, 1.0 * scale)
+    # A lobe pointing up, as on a vertical cut
+    angles = np.linspace(0.0, 2.0 * np.pi, 40)
+    radii = outer * (0.30 + 0.70 * np.clip(np.cos(angles - np.pi / 2), 0.0, 1.0) ** 1.6)
+    _polyline(
+        draw_list,
+        [(cx + r * np.cos(a), cy + r * np.sin(a)) for a, r in zip(angles, radii)],
+        color,
+        1.6 * scale,
+        closed=True,
+    )
+
+
+def antenna_lobe(draw_list, x, y, size, color, scale=1.0):
+    """A main lobe with a small back lobe, for the 3D pattern."""
     cx, cy = x + size * 0.30, y + size * 0.54
     draw_list.AddCircleFilled((cx, cy), size * 0.055, color)
     # Main lobe: a cardioid pointing right, closed back at the origin
@@ -320,9 +381,39 @@ def impulse_icon(draw_list, x, y, size, color, scale=1.0):
     )
 
 
+def truck(draw_list, x, y, size, color, scale=1.0):
+    """A box body with a lower cab in front, unmistakable against the car."""
+    wheel_y = y + size * 0.72
+    body_top = y + size * 0.26
+    # Cargo box
+    draw_list.AddRect(
+        (x + size * 0.10, body_top),
+        (x + size * 0.58, wheel_y),
+        color,
+        0.0,
+        0,
+        1.6 * scale,
+    )
+    # Cab, lower, with a sloped windscreen
+    _polyline(
+        draw_list,
+        [
+            (x + size * 0.58, y + size * 0.48),
+            (x + size * 0.72, y + size * 0.48),
+            (x + size * 0.88, y + size * 0.60),
+            (x + size * 0.88, wheel_y),
+            (x + size * 0.58, wheel_y),
+        ],
+        color,
+        1.6 * scale,
+    )
+    for cx in (x + size * 0.24, x + size * 0.46, x + size * 0.76):
+        draw_list.AddCircle((cx, wheel_y), size * 0.095, color, 14, 1.5 * scale)
+
+
 ASSET_ICONS = {
     "car": car,
-    "truck": car,
+    "truck": truck,
     "human": person,
     "drone": drone,
     "tree": tree,

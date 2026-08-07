@@ -20,6 +20,7 @@ from . import __version__ as GUI_VERSION
 from .analysis import (
     coverage_contents,
     link_budget_contents,
+    link_simulation_contents,
     noise_contents,
     refresh_statistics,
 )
@@ -278,6 +279,7 @@ class SionnaRtGui:
         self._statistics_time: float = 0.0
         self.radio_map_stats: dict | None = None
         self.link_budget_stats: dict | None = None
+        self.link_simulation_stats: dict | None = None
         self.coverage_threshold_dbm: float = -95.0
         # Solver work per frame, steered by the measured frame time
         self._rm_refine_samples: int = 0
@@ -930,6 +932,13 @@ class SionnaRtGui:
                 min(max(self._rm_refine_samples * 1.2, floor), ceiling)
             )
             self.solver_update_delay_s = max(self.solver_update_delay_s * 0.8, 0.0)
+
+    def link_budget_tx_power_dbm(self, tx_index: int = 0) -> float:
+        """Transmit power of a transmitter by index, in dBm."""
+        transmitters = list(self.scene._transmitters.values())
+        if tx_index >= len(transmitters):
+            return 0.0
+        return float(transmitters[tx_index].power_dbm[0])
 
     def rm_refine_samples_per_tx(self) -> int:
         """Samples per transmitter for one refinement step, within the budget."""
@@ -2415,6 +2424,13 @@ class SionnaRtGui:
             self.frequency_gui()
             psim.Spacing()
 
+            if psim.TreeNodeEx(
+                "Signal and noise##scene", psim.ImGuiTreeNodeFlags_DefaultOpen
+            ):
+                noise_contents(self)
+                psim.TreePop()
+            psim.Spacing()
+
     def section_assets(self) -> None:
         if psim.CollapsingHeader("Assets"):
             psim.Spacing()
@@ -3352,11 +3368,14 @@ class SionnaRtGui:
                     ):
                         link_budget_contents(self)
                     if psim.CollapsingHeader(
+                        "Transmission", psim.ImGuiTreeNodeFlags_DefaultOpen
+                    ):
+                        link_simulation_contents(self)
+                    if psim.CollapsingHeader(
                         "Coverage", psim.ImGuiTreeNodeFlags_DefaultOpen
                     ):
                         coverage_contents(self)
-                    if psim.CollapsingHeader("Noise"):
-                        noise_contents(self)
+
                 case "Assets":
                     self.section_assets()
                 case "Scene":
