@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
+import logging
 import os
 import sys
 import time
@@ -18,7 +19,17 @@ from sionna.rt.scene_utils import remove_objects_duplicate_vertices
 from . import __version__ as GUI_VERSION
 from .animation import AnimationConfig, animation_gui, animation_tick
 from .antenna_array import antenna_array_gui
+from .assets import (
+    ASSET_LIBRARY,
+    AssetSpec,
+    build_asset_material,
+    build_asset_mesh,
+)
+from sionna.rt.utils.geometry import rotation_matrix
+from sionna.rt.utils.render import scene_scale
+
 from .config import (
+    DEFAULT_SLICE_PLANE_NAME,
     GuiConfig,
     RadioMapConfig,
     PathsConfig,
@@ -34,6 +45,9 @@ from .rendering import (
 )
 from .rm_utils import radio_map_colorbar_to_image
 from .ps_utils import (
+    ACCENT,
+    ACCENT_BRIGHT,
+    im_col32,
     set_custom_imgui_style,
     set_polyscope_device_interop_funcs,
     supports_direct_update_from_device,
@@ -47,9 +61,13 @@ from .sionna_utils import (
     get_normal_for_path,
     set_or_update_radio_devices_polyscope,
 )
+from .cir_viz import cir_window
+from .pattern_viz import pattern_cuts_window, remove_antenna_pattern_structure
 from .selection import SelectionType, selection_gui
 
 CTRL_OR_CMD = "Cmd" if sys.platform == "darwin" else "Ctrl"
+# Bounding-box outline drawn while picking an object to attach a device to
+ATTACH_HIGHLIGHT_NAME = "Attach candidate"
 HELP_WINDOW_TABLES = {
     "Camera controls": {
         "Left click + drag": "Camera rotation",
@@ -62,7 +80,7 @@ HELP_WINDOW_TABLES = {
         "F": "Fit scene to camera",
     },
     "Mouse bindings": {
-        "Left click": "Select a radio device",
+        "Left click": "Select a radio device, or probe the radio map",
         f"{CTRL_OR_CMD} + left click": "Add transmitter",
         f"{CTRL_OR_CMD} + right click": "Add receiver",
     },
@@ -145,6 +163,45 @@ class SionnaRtGui:
         self.selected_object: rt.SceneObject | None = None
         self.selected_type: SelectionType | None = None
         self.prev_gizmo_to_world: np.ndarray | None = None
+        # Antenna pattern preview (see pattern_viz.py)
+        self.show_antenna_pattern: bool = False
+        self.antenna_pattern_cache_key: tuple | None = None
+        self.antenna_pattern_db_radius: bool = False
+        # 0 means "not set yet": a scene-dependent default is picked on first use.
+        self.antenna_pattern_scale: float = 0.0
+        # Transient "Saved <path>" message: (text, timestamp)
+        self.last_export_note: tuple[str, float] | None = None
+        # 2D antenna pattern cuts window (see pattern_viz.py)
+        self.show_pattern_cuts: bool = False
+        self.pattern_cuts_cache: dict | None = None
+        # Radio map probe: (cell_i, cell_j, world_position)
+        self.rm_probe: tuple[int, int, np.ndarray] | None = None
+        # Selected [rx_index, tx_index] pair in the CIR window
+        self.cir_pair: list[int] = [0, 0]
+        # CIR delay axis: auto-scale, or fixed maximum (0 = pick a
+        # scene-dependent default on first use)
+        self.cir_auto_delay: bool = True
+        self.cir_max_delay_ns: float = 0.0
+        # CIR level axis (None = seed from the data on first use)
+        self.cir_auto_level: bool = True
+        self.cir_max_db: float | None = None
+        # Devices attached to scene objects: device name ->
+        # {"object": object name, "offset": device minus object position}
+        self.attachments: dict[str, dict] = {}
+        # Lazily-built full traversal of the wireless scene (see
+        # update_attached_object); reset on scene load.
+        self._full_scene_params = None
+        # Device name waiting for the user to click a scene object to
+        # attach to (one-shot picking mode), and the object currently
+        # under the cursor while picking.
+        self.attach_pick_pending: str | None = None
+        self.attach_hover_name: str | None = None
+        # Mesh tinted for the hover highlight: (mesh id, original color)
+        self._attach_tinted: tuple[str, tuple] | None = None
+        # Rendering mode to restore when object-picking ends
+        self._attach_previous_rendering_mode: RenderingMode | None = None
+        # Names of assets placed from the library (see assets.py)
+        self.placed_assets: list[str] = []
 
         # --- Polyscope setup
         # Can be used to derive e.g. random seeds.
@@ -270,11 +327,13 @@ class SionnaRtGui:
         for pos in [
             [-34.0, 13.0, 33.0],
         ]:
-            self.add_radio_device(pos, is_transmitter=True, allow_auto_update=False)
+            self.add_radio_device(
+                pos, is_transmitter=True, allow_auto_update=False, select=False
+            )
 
             shifted = [pos[0] + 15, pos[1] - 14, pos[2] - 20]
             self.add_radio_device(
-                shifted, is_transmitter=False, allow_auto_update=False
+                shifted, is_transmitter=False, allow_auto_update=False, select=False
             )
 
         # Example animation
@@ -300,6 +359,17 @@ class SionnaRtGui:
         self.clear_paths()
         self.clear_ray_traced_image()
         self.animation_config.clear()
+        # Scene-dependent defaults are re-picked on first use
+        self.antenna_pattern_scale = 0.0
+        self.cir_max_delay_ns = 0.0
+        self.attachments.clear()
+        self._full_scene_params = None
+        self.attach_pick_pending = None
+        self.attach_hover_name = None
+        # The tinted mesh is gone with the old scene
+        self._attach_tinted = None
+        self._attach_previous_rendering_mode = None
+        self.placed_assets.clear()
 
         # Clear Polyscope state
         ps.remove_all_structures()
@@ -331,6 +401,11 @@ class SionnaRtGui:
                     bsdf.scattering_coefficient = scattering_coefficient
 
         self.cfg.scene_filename = scene_path
+
+        # Scene statistics shown in the GUI, computed once per scene load
+        shapes = self.scene.mi_scene.shapes()
+        n_triangles = sum(sh.face_count() for sh in shapes)
+        self.scene_stats = (len(shapes), n_triangles)
 
         # Add this scene to the list of known scene names, if missing
         if scene_path not in self.known_scene_paths:
@@ -384,9 +459,33 @@ class SionnaRtGui:
 
             ps.set_camera_view_matrix(self.home_camera_to_world)
 
+            # The camera pose snapshot used to detect camera motion is taken
+            # at the end of the tick, after this change: request an explicit
+            # re-render, otherwise the ray-traced image keeps the old pose.
+            self.reset_accumulation_requested = True
             ps.request_redraw()
         else:
             self.fit_camera_to_scene()
+
+    def move_camera_top(self):
+        """Bird's-eye view: look straight down at the scene from above."""
+        fov_vertical_deg = ps.get_view_camera_parameters().get_fov_vertical_deg()
+        bbox = self.scene.mi_scene.bbox()
+        center = np.array(bbox.center())
+        extents = np.array(bbox.extents())
+
+        footprint = max(extents[0], extents[1], 1.0)
+        distance = footprint / (
+            2.0 * np.tan(0.5 * np.radians(fov_vertical_deg))
+        ) + 0.5 * extents[2]
+        # Looking exactly down the up axis is degenerate (Polyscope warns and
+        # rejects the view), so keep a small but safe tilt.
+        eye = center + np.array([0.0, -0.05 * distance, distance])
+        ps.look_at(eye, center, fly_to=True)
+        if ps.get_navigation_style() == "turntable":
+            ps.set_view_center_raw(center)
+        self.reset_accumulation_requested = True
+        ps.request_redraw()
 
     def fit_camera_to_scene(self):
         """Move the camera to a position where most of the scene is visible."""
@@ -420,6 +519,8 @@ class SionnaRtGui:
 
         ps.set_view_center_raw(target)
         ps.look_at(origin, target)
+        # See move_camera_home: force the ray-traced view to follow the jump.
+        self.reset_accumulation_requested = True
 
     # ------------------------
 
@@ -722,11 +823,33 @@ class SionnaRtGui:
 
     # ------------------------
 
+    def default_new_device_position(self, is_transmitter: bool) -> list[float]:
+        """
+        Pick a sensible default position for a device added from the GUI:
+        near the center of the scene, up high, with a small offset per
+        existing device to avoid stacking them on top of each other.
+        """
+        bbox = self.scene.mi_scene.bbox()
+        center = 0.5 * (bbox.min + bbox.max)
+        extents = bbox.max - bbox.min
+        count = len(
+            self.scene._transmitters if is_transmitter else self.scene._receivers
+        )
+        # Transmitters spawn slightly to one side, receivers to the other.
+        side = 1.0 if is_transmitter else -1.0
+        spacing = max(0.02 * extents.x, 2.0)
+        return [
+            center.x + side * (0.1 * extents.x + spacing * count),
+            center.y,
+            center.z + 0.35 * extents.z,
+        ]
+
     def add_radio_device(
         self,
         position: list[float],
         is_transmitter: bool,
         allow_auto_update: bool = True,
+        select: bool = True,
     ) -> rt.RadioDevice:
         # TODO: controllable offset to the clicked surface (along normal?)
         existing_rd = (
@@ -751,6 +874,14 @@ class SionnaRtGui:
             is_transmitter,
             self,
         )
+
+        if select:
+            # Select the new device right away so it can be moved with the
+            # gizmo without an extra click.
+            self.selected_object = new_rd
+            self.selected_type = (
+                SelectionType.Transmitter if is_transmitter else SelectionType.Receiver
+            )
 
         if (
             allow_auto_update
@@ -778,6 +909,445 @@ class SionnaRtGui:
 
         if object.name in self.animation_config.trajectories:
             del self.animation_config.trajectories[object.name]
+        self.attachments.pop(object.name, None)
+
+    def attach_device_to_object(
+        self,
+        device: rt.RadioDevice,
+        object_name: str | None,
+        snap_position: np.ndarray | None = None,
+    ) -> None:
+        """
+        Attach a radio device to a scene object: the device snaps on top of
+        the object (or just above `snap_position`, e.g. the clicked point),
+        and from then on the object follows the device's motion
+        (trajectories, gizmo, position edits). Pass None to detach.
+        """
+        if object_name is None:
+            self.attachments.pop(device.name, None)
+            return
+
+        scene_object = self.scene.get(object_name)
+        if scene_object is None:
+            return
+        object_position = scene_object.position.numpy().squeeze()
+        if snap_position is not None:
+            new_position = np.asarray(snap_position, dtype=float) + [0.0, 0.0, 1.5]
+        else:
+            top_z = float(scene_object.mi_mesh.bbox().max.z)
+            new_position = np.array(
+                [object_position[0], object_position[1], top_z + 1.0]
+            )
+        device.position = mi.Point3f(*new_position.tolist())
+        dr.make_opaque(device.position)
+        self.attachments[device.name] = {
+            "object": object_name,
+            "offset": device.position.numpy().squeeze() - object_position,
+            # Device rotation at attach time, and the rotation applied to the
+            # object so far, both relative to that moment (see
+            # update_attached_object).
+            "device_rotation_0": np.array(
+                rotation_matrix(device.orientation).numpy()
+            ).squeeze(),
+            "applied_rotation": np.eye(3),
+        }
+
+    def update_attached_object(self, device: rt.RadioDevice) -> bool:
+        """
+        Move the scene object attached to this device (if any) so it stays
+        under the device. Updates the physics scene, the rasterized view,
+        and marks the ray-traced view for a re-render.
+        """
+        attachment = self.attachments.get(device.name)
+        if attachment is None:
+            return False
+        scene_object = self.scene.get(attachment["object"])
+        if scene_object is None:
+            return False
+
+        new_position = device.position.numpy().squeeze() - attachment["offset"]
+        delta = new_position - scene_object.position.numpy().squeeze()
+
+        # Rotation of the object follows the device's rotation since attaching
+        device_rotation = np.array(
+            rotation_matrix(device.orientation).numpy()
+        ).squeeze()
+        target_rotation = device_rotation @ attachment["device_rotation_0"].T
+        # Rotation still to apply, on top of what the object already has
+        increment = target_rotation @ attachment["applied_rotation"].T
+
+        needs_translation = not np.allclose(delta, 0.0, atol=1e-6)
+        needs_rotation = not np.allclose(increment, np.eye(3), atol=1e-6)
+        if not needs_translation and not needs_rotation:
+            return False
+
+        # Move the object's vertices in the wireless scene. We go through a
+        # fresh traversal because the scene parameters cached by sionna do not
+        # expose the mesh buffers for all scenes.
+        mesh = scene_object.mi_mesh
+        if self._full_scene_params is None:
+            self._full_scene_params = mi.traverse(self.scene.mi_scene)
+        key = mesh.id() + ".vertex_positions"
+        if key not in self._full_scene_params:
+            logging.warning("Cannot move scene object %s: no %s", mesh.id(), key)
+            return False
+
+        vertices = dr.unravel(mi.Point3f, self._full_scene_params[key])
+        if needs_rotation:
+            # Rotate around the object's own center, then translate
+            center = mi.Point3f(*scene_object.position.numpy().squeeze().tolist())
+            vertices = (
+                mi.Matrix3f(increment.tolist()) @ (vertices - center)
+            ) + center
+            attachment["applied_rotation"] = target_rotation
+        if needs_translation:
+            vertices = vertices + mi.Point3f(*delta.tolist())
+        self._full_scene_params[key] = dr.ravel(vertices)
+        self._full_scene_params.update()
+        # Invalidate sionna's solver caches
+        self.scene.scene_geometry_updated()
+
+        # Update the rasterized (polyscope) mesh from the moved vertices
+        if ps.has_surface_mesh(mesh.id()):
+            ps.get_surface_mesh(mesh.id()).update_vertex_positions(
+                mesh.vertex_positions_buffer().numpy().reshape(-1, 3)
+            )
+
+        # The ray-traced view has its own scene: mark the moved shape dirty
+        # so its acceleration structure is rebuilt, and restart accumulation.
+        if self.render_cache is not None:
+            try:
+                params = mi.traverse(self.render_cache["visual_scene"])
+                key = f"{mesh.id()}.vertex_positions"
+                if key in params:
+                    params[key] = mesh.vertex_positions_buffer()
+                    params.update()
+            except Exception as e:
+                logging.debug("Could not update ray-traced scene: %s", e)
+        self.reset_accumulation_requested = True
+        return True
+
+    def resolve_scene_object_at(
+        self, screen_coords, pick_result: ps.PickResult | None = None
+    ) -> tuple[str | None, np.ndarray | None]:
+        """
+        Find the scene object under the given screen position. Returns its
+        name and the world-space hit point, or (None, None).
+        """
+        if pick_result is None:
+            pick_result = ps.pick(screen_coords=screen_coords)
+
+        if pick_result.is_hit:
+            mesh_to_object = {
+                o.mi_mesh.id(): name for name, o in self.scene.objects.items()
+            }
+            object_name = mesh_to_object.get(pick_result.structure_name)
+            if object_name is not None:
+                return object_name, np.asarray(pick_result.position)
+
+        # In ray-traced mode the raster meshes are hidden and not pickable:
+        # resolve the point via the depth buffer and take the smallest object
+        # whose bounds contain it.
+        world = ps.screen_coords_to_world_position(screen_coords)
+        if not np.all(np.isfinite(world)):
+            return None, None
+        margin = 0.5
+        best_volume = np.inf
+        best: tuple[str, np.ndarray] | None = None
+        for name, scene_object in self.scene.objects.items():
+            bbox = scene_object.mi_mesh.bbox()
+            low = np.array(bbox.min) - margin
+            high = np.array(bbox.max) + margin
+            if np.all(world >= low) and np.all(world <= high):
+                volume = float(np.prod(np.array(bbox.extents()) + 1))
+                if volume < best_volume:
+                    best_volume = volume
+                    best = (name, world)
+        if best is None:
+            return None, None
+        return best
+
+    def asset_drop_position(self) -> np.ndarray:
+        """
+        Where a newly placed asset should land: the point the camera looks at,
+        falling back to the center of the scene's ground.
+        """
+        point = get_point_from_camera_center_ray(
+            self.scene, np.linalg.inv(ps.get_camera_view_matrix())
+        )
+        if point is not None and np.all(np.isfinite(point)):
+            return np.asarray(point, dtype=float)
+        bbox = self.scene.mi_scene.bbox()
+        center = np.array(bbox.center())
+        return np.array([center[0], center[1], float(bbox.min.z)])
+
+    def add_asset(self, spec: AssetSpec, position=None) -> rt.SceneObject | None:
+        """
+        Place a library asset in the scene. It becomes a regular scene object:
+        it blocks and reflects signals, can be attached to a radio device, and
+        shows up in the object lists.
+        """
+        if position is None:
+            position = self.asset_drop_position()
+
+        index = 1
+        while f"{spec.key}-{index}" in self.scene.objects:
+            index += 1
+        name = f"{spec.key}-{index}"
+
+        try:
+            scene_object = rt.SceneObject(
+                mi_mesh=build_asset_mesh(spec, name, position),
+                name=name,
+                radio_material=build_asset_material(spec),
+            )
+            self.scene.edit(add=scene_object)
+        except Exception as e:
+            logging.error("Could not add asset %s: %s", spec.label, e)
+            self._set_export_note(f"Could not add {spec.label}: {e}")
+            return None
+
+        self.placed_assets.append(name)
+        self.on_scene_geometry_changed()
+        self._set_export_note(f"Placed {spec.label} ({name})")
+        return scene_object
+
+    def remove_asset(self, name: str) -> None:
+        """Remove a previously placed asset from the scene."""
+        # Detach any device that was following it
+        for device_name, attachment in list(self.attachments.items()):
+            if attachment["object"] == name:
+                del self.attachments[device_name]
+        try:
+            mesh_id = self.scene.get(name).mi_mesh.id()
+            self.scene.edit(remove=name)
+        except Exception as e:
+            logging.error("Could not remove asset %s: %s", name, e)
+            return
+        if name in self.placed_assets:
+            self.placed_assets.remove(name)
+        if ps.has_surface_mesh(mesh_id):
+            ps.get_surface_mesh(mesh_id).remove()
+        self.on_scene_geometry_changed()
+
+    def on_scene_geometry_changed(self) -> None:
+        """
+        Refresh everything that caches the scene's geometry after objects were
+        added or removed.
+        """
+        add_scene_to_polyscope(self.scene, self.ps_groups)
+        shapes = self.scene.mi_scene.shapes()
+        self.scene_stats = (len(shapes), sum(sh.face_count() for sh in shapes))
+        # The ray-traced view builds its own copy of the scene, and our
+        # traversal of the wireless scene is now stale.
+        self.render_cache = None
+        self._full_scene_params = None
+        self.reset_accumulation_requested = True
+        self.reset_radio_map()
+        if self.cfg.paths.auto_update:
+            self.update_paths(clear_first=True, show=True)
+
+    def assets_gui(self) -> None:
+        """Asset library: place ready-made objects into the scene."""
+        psim.TextDisabled("Placed where the camera is looking.")
+        for i, spec in enumerate(ASSET_LIBRARY):
+            if i % 3 != 0:
+                psim.SameLine()
+            if psim.Button(f"{spec.label}##asset_{spec.key}"):
+                self.add_asset(spec)
+            if psim.IsItemHovered():
+                size = spec.size
+                psim.SetTooltip(
+                    f"{size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m\n{spec.note}"
+                )
+
+        if not self.placed_assets:
+            return
+        psim.Spacing()
+        for name in list(self.placed_assets):
+            psim.PushID(name)
+            psim.AlignTextToFramePadding()
+            psim.Text(name)
+            psim.SameLine()
+            psim.SetCursorPosX(
+                psim.GetCursorPosX() + psim.GetContentRegionAvail()[0] - 24 * self.ui_scale
+            )
+            if psim.SmallButton("x"):
+                self.remove_asset(name)
+            psim.PopID()
+
+    def start_attach_pick(self, device_name: str) -> None:
+        """
+        Enter "click an object to attach to" mode. Objects are only visible and
+        pickable in the rasterized view, so switch to it for the duration and
+        restore the previous rendering mode afterwards.
+        """
+        self.attach_pick_pending = device_name
+        self._attach_previous_rendering_mode = self.cfg.rendering.mode
+        if self.cfg.rendering.mode != RenderingMode.RASTERIZATION:
+            self.set_rendering_mode(RenderingMode.RASTERIZATION)
+
+    def end_attach_pick(self) -> None:
+        """Leave object-picking mode and restore the previous rendering mode."""
+        self.attach_pick_pending = None
+        self.clear_attach_highlight()
+        previous_mode = self._attach_previous_rendering_mode
+        self._attach_previous_rendering_mode = None
+        if previous_mode is not None and previous_mode != self.cfg.rendering.mode:
+            self.set_rendering_mode(previous_mode)
+
+    def clear_attach_highlight(self) -> None:
+        self.attach_hover_name = None
+        if ps.has_curve_network(ATTACH_HIGHLIGHT_NAME):
+            ps.get_curve_network(ATTACH_HIGHLIGHT_NAME).remove()
+        # Restore the color of the previously tinted mesh
+        if self._attach_tinted is not None:
+            mesh_id, color = self._attach_tinted
+            self._attach_tinted = None
+            if ps.has_surface_mesh(mesh_id):
+                ps.get_surface_mesh(mesh_id).set_color(color)
+
+    def _tint_hovered_mesh(self, mesh_id: str) -> None:
+        """
+        Tint the hovered mesh with the accent color (restoring the previously
+        tinted one). This reads more clearly than the outline alone, which is
+        depth-tested and can hide behind other geometry.
+        """
+        if self._attach_tinted is not None and self._attach_tinted[0] == mesh_id:
+            return
+        if self._attach_tinted is not None:
+            previous_id, previous_color = self._attach_tinted
+            if ps.has_surface_mesh(previous_id):
+                ps.get_surface_mesh(previous_id).set_color(previous_color)
+            self._attach_tinted = None
+        if ps.has_surface_mesh(mesh_id):
+            struct = ps.get_surface_mesh(mesh_id)
+            self._attach_tinted = (mesh_id, struct.get_color())
+            struct.set_color(ACCENT_BRIGHT)
+
+    def update_attach_highlight(self) -> None:
+        """
+        While picking an object to attach to, outline the object under the
+        cursor and label it, so it is clear what a click would select.
+        """
+        if self.attach_pick_pending is None:
+            self.clear_attach_highlight()
+            return
+
+        imgui_io = psim.GetIO()
+        if imgui_io.WantCaptureMouse:
+            # Cursor is over the GUI, not the scene
+            self.clear_attach_highlight()
+            return
+
+        object_name, _ = self.resolve_scene_object_at(imgui_io.MousePos)
+        if object_name is None:
+            self.clear_attach_highlight()
+            return
+        self.attach_hover_name = object_name
+
+        scene_object = self.scene.get(object_name)
+        self._tint_hovered_mesh(scene_object.mi_mesh.id())
+
+        # Outline the object's bounding box (the only cue available in
+        # ray-traced mode, where the rasterized meshes are hidden)
+        bbox = scene_object.mi_mesh.bbox()
+        low, high = np.array(bbox.min), np.array(bbox.max)
+        corners = np.array(
+            [
+                [x, y, z]
+                for x in (low[0], high[0])
+                for y in (low[1], high[1])
+                for z in (low[2], high[2])
+            ]
+        )
+        # Corner i encodes (x, y, z) choices in its bits: connect the pairs
+        # that differ in exactly one axis.
+        edges = np.array(
+            [(i, i ^ bit) for i in range(8) for bit in (1, 2, 4) if i & bit == 0]
+        )
+        struct = ps.register_curve_network(
+            ATTACH_HIGHLIGHT_NAME, corners, edges, color=ACCENT_BRIGHT, enabled=True
+        )
+        struct.set_radius(
+            max(0.0012 * scene_scale(self.scene), 0.15), relative=False
+        )
+        struct.set_ignore_slice_plane(DEFAULT_SLICE_PLANE_NAME, True)
+
+        # Label next to the cursor
+        psim.GetForegroundDrawList().AddText(
+            (imgui_io.MousePos[0] + 18 * self.ui_scale, imgui_io.MousePos[1]),
+            im_col32(*ACCENT_BRIGHT),
+            object_name,
+        )
+
+    def radio_device_list_gui(self) -> None:
+        """
+        List of all radio devices in the scene: click a row to select the
+        device (showing its gizmo), click 'x' to remove it.
+        """
+        if not self.scene._transmitters and not self.scene._receivers:
+            psim.TextDisabled("No radio devices in the scene yet.")
+            return
+
+        to_remove: list[tuple[rt.RadioDevice, bool]] = []
+        for is_transmitter, devices in (
+            (True, self.scene._transmitters),
+            (False, self.scene._receivers),
+        ):
+            for name, rd in devices.items():
+                psim.PushID(name)
+                is_selected = self.selected_object is rd
+                swatch = psim.GetFontSize() * 0.9
+                psim.ColorButton(
+                    "##swatch",
+                    (*rd.color, 1.0),
+                    psim.ImGuiColorEditFlags_NoTooltip,
+                    (swatch, swatch),
+                )
+                psim.SameLine()
+                row_width = (
+                    psim.GetContentRegionAvail()[0] - 30 * self.ui_scale
+                )
+                clicked = psim.Selectable(name, is_selected, 0, (row_width, 0))
+                if psim.IsItemHovered():
+                    position = rd.position.numpy().squeeze()
+                    psim.SetTooltip(
+                        f"{'Transmitter' if is_transmitter else 'Receiver'} at "
+                        f"({position[0]:.1f}, {position[1]:.1f}, {position[2]:.1f}).\n"
+                        "Click to select and show its move gizmo."
+                    )
+                if clicked:
+                    if is_selected:
+                        self.clear_selection()
+                    else:
+                        self.selected_object = rd
+                        self.selected_type = (
+                            SelectionType.Transmitter
+                            if is_transmitter
+                            else SelectionType.Receiver
+                        )
+                psim.SameLine()
+                if psim.SmallButton("x"):
+                    to_remove.append((rd, is_transmitter))
+                psim.PopID()
+
+        for rd, is_transmitter in to_remove:
+            if self.selected_object is rd:
+                self.clear_selection()
+            self.remove_object(
+                rd,
+                SelectionType.Transmitter if is_transmitter else SelectionType.Receiver,
+            )
+            set_or_update_radio_devices_polyscope(
+                self.scene.transmitters if is_transmitter else self.scene.receivers,
+                is_transmitter,
+                self,
+            )
+            if is_transmitter:
+                self.reset_radio_map()
+            if self.cfg.paths.auto_update:
+                self.update_paths(clear_first=True, show=True)
 
     def clear_radio_devices(self) -> None:
         for name in self.scene._transmitters.keys():
@@ -817,11 +1387,60 @@ class SionnaRtGui:
 
         self.radio_map._pathgain_map *= 0.0
 
+    def set_rm_probe(self, world_position: np.ndarray) -> None:
+        """
+        Place the radio map probe at the clicked world position: the value of
+        the underlying cell is shown in the Radio map section.
+        """
+        if self.radio_map is None or not isinstance(self.radio_map, rt.PlanarRadioMap):
+            return
+        to_local = np.linalg.inv(self.radio_map.to_world.matrix.numpy().squeeze())
+        local = to_local @ np.append(world_position, 1.0)
+        height, width = self.radio_map.path_gain.shape[1:]
+        j = int(round((local[0] + 1.0) / 2.0 * (width - 1)))
+        i = int(round((local[1] + 1.0) / 2.0 * (height - 1)))
+        if not (0 <= i < height and 0 <= j < width):
+            return
+        self.rm_probe = (i, j, np.asarray(world_position))
+
+        marker = ps.register_point_cloud(
+            "RM probe",
+            np.asarray(world_position)[None, :],
+            color=ACCENT_BRIGHT,
+            enabled=True,
+        )
+        marker.set_radius(
+            max(0.0015 * scene_scale(self.scene), 1.2), relative=False
+        )
+        marker.set_ignore_slice_plane(DEFAULT_SLICE_PLANE_NAME, True)
+
+    def rm_probe_value_db(self) -> float | None:
+        """Current path gain in dB at the probe's cell (max over transmitters)."""
+        if self.rm_probe is None or self.radio_map is None:
+            return None
+        i, j, _ = self.rm_probe
+        path_gain = self.radio_map.path_gain
+        n_tx, height, width = path_gain.shape
+        if not (0 <= i < height and 0 <= j < width):
+            return None
+        # Read the probed cell for each transmitter from the flat array
+        indices = mi.UInt32([t * height * width + i * width + j for t in range(n_tx)])
+        value = float(dr.max(dr.gather(mi.Float, path_gain.array, indices))[0])
+        if value <= 0.0:
+            return None
+        return 10.0 * np.log10(value)
+
+    def clear_rm_probe(self) -> None:
+        self.rm_probe = None
+        if ps.has_point_cloud("RM probe"):
+            ps.get_point_cloud("RM probe").remove()
+
     def clear_radio_map(self):
         self.radio_map = None
         self.rm_accumulated_samples = 0
         self.rm_colorbar = None
         self.rm_colorbar_texture_id = None
+        self.clear_rm_probe()
         if ps.has_surface_mesh("radio_map"):
             ps.get_surface_mesh("radio_map").remove()
 
@@ -972,9 +1591,11 @@ class SionnaRtGui:
         if not has_active_item and psim.IsKeyPressed(psim.ImGuiKey_Tab, repeat=False):
             self.cfg.gui_mode = GuiMode((self.cfg.gui_mode.value + 1) % len(GuiMode))
 
-        # Esc: close help window or de-select
+        # Esc: cancel attach-picking, close help window, or de-select
         if psim.IsKeyPressed(psim.ImGuiKey_Escape, repeat=False):
-            if self.cfg.show_help_window:
+            if self.attach_pick_pending is not None:
+                self.end_attach_pick()
+            elif self.cfg.show_help_window:
                 self.cfg.show_help_window = False
             elif self.selected_object is not None:
                 self.clear_selection()
@@ -986,9 +1607,40 @@ class SionnaRtGui:
         self.was_mouse_dragging = has_mouse_drag
 
     def process_pick_result(self, pick_result: ps.PickResult) -> bool:
+        # One-shot "pick an object to attach to" mode
+        if self.attach_pick_pending is not None:
+            device_name = self.attach_pick_pending
+            self.end_attach_pick()
+            device = self.scene.get(device_name)
+            if device is not None:
+                object_name, snap_position = self.resolve_scene_object_at(
+                    pick_result.screen_coords, pick_result=pick_result
+                )
+                if object_name is not None:
+                    self.attach_device_to_object(
+                        device, object_name, snap_position=snap_position
+                    )
+                    self.update_attached_object(device)
+                    set_or_update_radio_devices_polyscope(
+                        self.scene.transmitters
+                        if isinstance(device, rt.Transmitter)
+                        else self.scene.receivers,
+                        isinstance(device, rt.Transmitter),
+                        self,
+                    )
+                    if isinstance(device, rt.Transmitter):
+                        self.reset_radio_map()
+                    if self.cfg.paths.auto_update:
+                        self.update_paths(clear_first=True, show=True)
+            return True
+
         if not pick_result.is_hit or "index" not in pick_result.structure_data:
             self.clear_selection()
             return False
+
+        if pick_result.structure_name == "radio_map":
+            self.set_rm_probe(pick_result.position)
+            return True
 
         picked_index = pick_result.structure_data["index"]
         if pick_result.structure_name in "Transmitters":
@@ -1010,9 +1662,175 @@ class SionnaRtGui:
             ps.get_point_cloud("Gizmo").remove()
         if ps.has_curve_network("Trajectory"):
             ps.get_curve_network("Trajectory").remove()
+        if ps.has_point_cloud("Trajectory waypoints"):
+            ps.get_point_cloud("Trajectory waypoints").remove()
+        remove_antenna_pattern_structure()
+        self.antenna_pattern_cache_key = None
+
+    def _export_directory(self) -> str:
+        pictures = os.path.join(os.path.expanduser("~"), "Pictures")
+        return pictures if os.path.isdir(pictures) else os.getcwd()
+
+    def _set_export_note(self, note: str) -> None:
+        self.last_export_note = (note, time.time())
+
+    def save_screenshot(self) -> None:
+        """Save a PNG of the current view (including the UI) to disk."""
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(self._export_directory(), f"sionna_rt_{stamp}.png")
+        ps.screenshot(filename=path, transparent_bg=False, include_UI=True)
+        self._set_export_note(f"Saved {path}")
+
+    def export_radio_map(self) -> None:
+        """Save the current radio map (path gain, linear) as a .npy file."""
+        if self.radio_map is None:
+            return
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(self._export_directory(), f"radio_map_{stamp}.npy")
+        np.save(path, self.radio_map._pathgain_map.numpy())
+        self._set_export_note(f"Saved {path}")
+
+    def set_carrier_frequency(self, frequency_hz: float) -> None:
+        """
+        Set the scene's carrier frequency and refresh all radio results,
+        since material properties and propagation depend on it.
+        """
+        self.scene.frequency = frequency_hz
+        self.reset_radio_map()
+        if self.cfg.paths.auto_update:
+            self.update_paths(clear_first=True, show=True)
+
+    def frequency_gui(self) -> None:
+        """
+        Carrier frequency control: free input in GHz plus common-band presets.
+        """
+        frequency_ghz = float(self.scene.frequency[0]) / 1e9
+
+        psim.PushItemWidth(160 * self.ui_scale)
+        changed, new_frequency_ghz = psim.InputFloat(
+            "Carrier frequency [GHz]##scene",
+            frequency_ghz,
+            format="%.3f",
+            flags=psim.ImGuiInputTextFlags_EnterReturnsTrue,
+        )
+        psim.PopItemWidth()
+        if psim.IsItemHovered():
+            psim.SetTooltip(
+                "Press Enter to apply. Radio materials and propagation\n"
+                "results depend on the carrier frequency."
+            )
+        if changed and 0.001 <= new_frequency_ghz <= 1000:
+            self.set_carrier_frequency(new_frequency_ghz * 1e9)
+
+        # Common band presets
+        for label, preset_ghz in (
+            ("2.4", 2.4),
+            ("3.5", 3.5),
+            ("5.9", 5.9),
+            ("28", 28.0),
+            ("60", 60.0),
+        ):
+            is_current = abs(frequency_ghz - preset_ghz) < 1e-6
+            if is_current:
+                psim.PushStyleColor(
+                    psim.ImGuiCol_Button, (0.30, 0.46, 0.04, 1.0)
+                )
+            if psim.Button(f"{label}##freq_preset"):
+                self.set_carrier_frequency(preset_ghz * 1e9)
+            if is_current:
+                psim.PopStyleColor()
+            psim.SameLine()
+        wavelength_m = 299792458.0 / (frequency_ghz * 1e9)
+        if wavelength_m >= 0.1:
+            wavelength_str = f"{100 * wavelength_m:.1f} cm"
+        else:
+            wavelength_str = f"{1000 * wavelength_m:.1f} mm"
+        psim.TextDisabled(f"wavelength {wavelength_str}")
+
+    def header_gui(self):
+        """
+        Branded header of the main panel: app title, accent underline, and a
+        live status row (FPS health, device counts, current scene).
+        """
+        draw_list = psim.GetWindowDrawList()
+
+        # Title line, with the snapshot and help buttons on the right
+        psim.TextColored((*ACCENT_BRIGHT, 1.0), "S I O N N A   R T")
+        psim.SameLine()
+        bw = 26 * self.ui_scale
+        buttons_width = 118 * self.ui_scale
+        psim.SetCursorPosX(
+            psim.GetCursorPosX() + psim.GetContentRegionAvail()[0] - buttons_width
+        )
+        if psim.Button("Save view"):
+            self.save_screenshot()
+        if psim.IsItemHovered():
+            psim.SetTooltip("Save a PNG screenshot of the current view")
+        psim.SameLine()
+        if psim.Button("?", size=(bw, 0)):
+            self.cfg.show_help_window = not self.cfg.show_help_window
+        if psim.IsItemHovered():
+            psim.SetTooltip("Controls & shortcuts (H)")
+
+        psim.TextDisabled("Ray-traced radio propagation")
+
+        # Accent underline
+        x, y = psim.GetCursorScreenPos()
+        width = psim.GetContentRegionAvail()[0]
+        draw_list.AddRectFilled(
+            (x, y + 2 * self.ui_scale),
+            (x + width, y + 4 * self.ui_scale),
+            im_col32(*ACCENT),
+            1.0,
+        )
+        psim.Dummy((0, 8 * self.ui_scale))
+
+        # Status row: FPS health dot, device counts, current scene
+        io = psim.GetIO()
+        fps = io.Framerate
+        if fps >= 30:
+            fps_color = ACCENT_BRIGHT
+        elif fps >= 15:
+            fps_color = (0.95, 0.75, 0.20)
+        else:
+            fps_color = (0.90, 0.30, 0.25)
+
+        cx, cy = psim.GetCursorScreenPos()
+        radius = 3.5 * self.ui_scale
+        draw_list.AddCircleFilled(
+            (cx + radius, cy + 0.55 * psim.GetFontSize()), radius, im_col32(*fps_color)
+        )
+        psim.Dummy((2.5 * radius, 0))
+        psim.SameLine()
+        psim.Text(f"{fps:.0f} FPS")
+        if psim.IsItemHovered():
+            psim.SetTooltip(f"Frame time: {1000 * io.DeltaTime:.2f} ms")
+
+        psim.SameLine()
+        psim.TextDisabled("|")
+        psim.SameLine()
+        psim.Text(
+            f"{len(self.scene._transmitters)} TX, {len(self.scene._receivers)} RX"
+        )
+
+        if 0 <= self.current_scene_idx < len(self.known_scene_names):
+            psim.SameLine()
+            psim.TextDisabled("|")
+            psim.SameLine()
+            psim.TextDisabled(self.known_scene_names[self.current_scene_idx])
+
+        # Transient confirmation after exports ("Saved /path/to/file")
+        note = getattr(self, "last_export_note", None)
+        if note is not None and time.time() - note[1] < 8.0:
+            psim.TextColored((*ACCENT_BRIGHT, 1.0), note[0])
+
+        psim.Dummy((0, 2 * self.ui_scale))
 
     def gui(self):
         # TODO: change GUI accent color to a non-default color.
+
+        # Highlight the object under the cursor while picking one
+        self.update_attach_highlight()
 
         if self.cfg.gui_mode == GuiMode.HIDDEN:
             return
@@ -1020,6 +1838,21 @@ class SionnaRtGui:
         # --- Selection window
         if self.selected_object is not None:
             selection_gui(self, self.selected_object, self.selected_type)
+
+        # --- Antenna pattern cuts (needs a selected radio device)
+        if self.selected_object is not None and self.selected_type in (
+            SelectionType.Transmitter,
+            SelectionType.Receiver,
+        ):
+            array = (
+                self.scene.tx_array
+                if self.selected_type == SelectionType.Transmitter
+                else self.scene.rx_array
+            )
+            pattern_cuts_window(self, array)
+
+        # --- Channel impulse response
+        cir_window(self)
 
         # --- Help window
         if self.cfg.show_help_window:
@@ -1065,16 +1898,7 @@ class SionnaRtGui:
         )
         psim.Begin("Sionna RT##sionna", open=True)
 
-        psim.Text(f"Frame time: {1000 * psim.GetIO().DeltaTime:.2f} ms")
-
-        psim.SameLine()
-        bw = 20
-        psim.SetCursorPosX(
-            (psim.GetCursorPosX() + psim.GetContentRegionAvail()[0] - bw)
-            * self.ui_scale
-        )
-        if psim.Button("?", size=(bw * self.ui_scale, 0)):
-            self.cfg.show_help_window = not self.cfg.show_help_window
+        self.header_gui()
 
         if psim.CollapsingHeader("Scene", psim.ImGuiTreeNodeFlags_DefaultOpen):
             psim.Spacing()
@@ -1089,14 +1913,77 @@ class SionnaRtGui:
             if changed:
                 self.load_scene_requested = self.known_scene_paths[combo_i]
 
+            n_meshes, n_triangles = getattr(self, "scene_stats", (0, 0))
+            if n_triangles >= 1_000_000:
+                triangles_str = f"{n_triangles / 1e6:.1f}M"
+            elif n_triangles >= 1_000:
+                triangles_str = f"{n_triangles / 1e3:.0f}k"
+            else:
+                triangles_str = str(n_triangles)
+            psim.TextDisabled(f"{n_meshes} meshes, {triangles_str} triangles")
+
             psim.Spacing()
 
-        if psim.CollapsingHeader("Radio devices", psim.ImGuiTreeNodeFlags_DefaultOpen):
+            psim.AlignTextToFramePadding()
+            psim.Text("Camera:")
+            psim.SameLine()
+            if psim.Button("Top##camera"):
+                self.move_camera_top()
+            psim.SameLine()
+            if psim.Button("Fit##camera"):
+                self.fit_camera_to_scene()
+            if psim.IsItemHovered():
+                psim.SetTooltip("Fit the whole scene in view (F)")
+            psim.SameLine()
+            if psim.Button("Home##camera"):
+                self.move_camera_home()
+            if psim.IsItemHovered():
+                psim.SetTooltip("Return to the initial view (R)")
+
+            psim.Spacing()
+            self.frequency_gui()
+            psim.Spacing()
+
+        if psim.CollapsingHeader("Assets"):
+            psim.Spacing()
+            self.assets_gui()
+            psim.Spacing()
+
+        n_tx = len(self.scene._transmitters)
+        n_rx = len(self.scene._receivers)
+        if psim.CollapsingHeader(
+            f"Radio devices ({n_tx} TX, {n_rx} RX)###radio_devices",
+            psim.ImGuiTreeNodeFlags_DefaultOpen,
+        ):
             psim.Spacing()
             # TODO: button to place radio devices: at random; or samples from a radio map
+            if psim.Button("+ Add transmitter"):
+                self.add_radio_device(
+                    self.default_new_device_position(is_transmitter=True),
+                    is_transmitter=True,
+                )
+            psim.SameLine()
+            if psim.Button("+ Add receiver"):
+                self.add_radio_device(
+                    self.default_new_device_position(is_transmitter=False),
+                    is_transmitter=False,
+                )
+            psim.TextDisabled(
+                f"Tip: {CTRL_OR_CMD} + left / right click in the scene places\n"
+                "a transmitter / receiver at the clicked point."
+            )
+            psim.Spacing()
+
+            self.radio_device_list_gui()
+            psim.Spacing()
+
             antenna_array_gui(self)
 
-            clicked = psim.Button("Clear all radio devices")
+            psim.PushStyleColor(psim.ImGuiCol_Button, (0.42, 0.16, 0.14, 1.0))
+            psim.PushStyleColor(psim.ImGuiCol_ButtonHovered, (0.55, 0.20, 0.17, 1.0))
+            psim.PushStyleColor(psim.ImGuiCol_ButtonActive, (0.65, 0.24, 0.20, 1.0))
+            clicked = psim.Button("Remove all devices")
+            psim.PopStyleColor(3)
             if clicked:
                 self.clear_radio_devices()
 
@@ -1117,9 +2004,39 @@ class SionnaRtGui:
             psim.EndDisabled()
 
             psim.SameLine()
+            psim.BeginDisabled(self.radio_map is None)
+            if psim.Button("Export##radio_map"):
+                self.export_radio_map()
+            if psim.IsItemHovered(psim.ImGuiHoveredFlags_AllowWhenDisabled):
+                psim.SetTooltip(
+                    "Save the path gain map (linear, one layer per\n"
+                    "transmitter) as a NumPy .npy file."
+                )
+            psim.EndDisabled()
+
+            psim.SameLine()
             _, self.cfg.radio_map.auto_update = psim.Checkbox(
                 "Automatic update##rm", self.cfg.radio_map.auto_update
             )
+
+            if self.rm_probe is not None:
+                probe_db = self.rm_probe_value_db()
+                position = self.rm_probe[2]
+                psim.TextColored(
+                    (*ACCENT_BRIGHT, 1.0),
+                    f"Probe: {probe_db:.1f} dB"
+                    if probe_db is not None
+                    else "Probe: no coverage",
+                )
+                psim.SameLine()
+                psim.TextDisabled(
+                    f"at ({position[0]:.1f}, {position[1]:.1f}, {position[2]:.1f})"
+                )
+                psim.SameLine()
+                if psim.SmallButton("x##clear_probe"):
+                    self.clear_rm_probe()
+            elif self.radio_map is not None:
+                psim.TextDisabled("Tip: click the radio map to probe its value.")
 
             # -- Radio map computation options
             psim.Spacing()
@@ -1251,6 +2168,18 @@ class SionnaRtGui:
             _, self.cfg.paths.auto_update = psim.Checkbox(
                 "Automatic update##paths", self.cfg.paths.auto_update
             )
+
+            changed, self.cfg.paths.compute_cir = psim.Checkbox(
+                "Channel impulse response##paths", self.cfg.paths.compute_cir
+            )
+            if psim.IsItemHovered():
+                psim.SetTooltip(
+                    "Opens a window with the channel impulse response h:\n"
+                    "one stem per propagation path, |h| in dB over delay."
+                )
+            if changed and self.cfg.paths.compute_cir:
+                # Fill in the CIR data right away
+                self.update_paths(show=True)
 
             changed, self.cfg.paths.max_depth = psim.SliderInt(
                 "Max depth##paths",
@@ -1464,14 +2393,16 @@ class SionnaRtGui:
         )
 
         _, self.cfg.show_help_window = psim.Begin(
-            "Help",
+            "Controls & shortcuts###help_window",
             open=True,
             flags=psim.ImGuiWindowFlags_Modal
             | psim.ImGuiWindowFlags_NoFocusOnAppearing,
         )
 
-        psim.Text(
-            f"Sionna RT GUI v{GUI_VERSION[0]}.{GUI_VERSION[1]}.{GUI_VERSION[2]}.\n(c) NVIDIA Corporation 2025.\n\n"
+        psim.TextColored((*ACCENT_BRIGHT, 1.0), "S I O N N A   R T")
+        psim.TextDisabled(
+            f"v{GUI_VERSION[0]}.{GUI_VERSION[1]}.{GUI_VERSION[2]} - "
+            "(c) NVIDIA Corporation 2025\n"
             "Uses map data from OpenStreetMap (openstreetmap.org/copyright)."
         )
 
@@ -1485,7 +2416,7 @@ class SionnaRtGui:
                 - psim.CalcTextSize(title)[0]
             )
             psim.SetCursorPosX(text_pos * self.ui_scale)
-            psim.Text(title)
+            psim.TextColored((*ACCENT_BRIGHT, 1.0), title)
 
             psim.Separator()
             psim.Columns(2)
