@@ -251,6 +251,10 @@ class SionnaRtGui:
         # Index of the visible properties tab, and of the bottom editor
         self.properties_tab: int = 0
         self.bottom_tab: int = 0
+        # The simulation only runs once started, and can then be paused
+        self.simulation_running: bool = False
+        self.simulation_started: bool = False
+        self.compute_radio_map_on_start: bool = False
         # Previous gizmo transform while moving a scene object
         self.object_gizmo_previous: np.ndarray | None = None
         # Right-click context menu state
@@ -402,13 +406,11 @@ class SionnaRtGui:
         traj.add_point(p + [40, 0, 0])
         traj.enabled = True
         traj.distance = 0.0  # Start at the first point
-        self.animation_config.playing = True
         self.animation_config.speed_multiplier = 10.0
-
-        if add_radio_map:
-            self.set_radio_map(self.compute_radio_map(), show=True)
-        if self.cfg.paths.auto_update:
-            self.update_paths(show=True)
+        # The scenario is only set up here: computing and animating waits for
+        # the user to press Start.
+        self.animation_config.playing = False
+        self.compute_radio_map_on_start = add_radio_map
 
     def reset_and_setup_structures(self):
         # Clear Sionna state
@@ -670,7 +672,7 @@ class SionnaRtGui:
                 )
 
         # --- Automatic refinement of the radio map
-        if self.radio_map is not None:
+        if self.simulation_running and self.radio_map is not None:
             if (
                 self.rm_accumulated_samples
                 < self.cfg.radio_map.accumulate_max_samples_per_tx
@@ -693,7 +695,8 @@ class SionnaRtGui:
                     )
 
         # --- Radio device animations
-        animation_tick(self, psim.GetIO().DeltaTime)
+        if self.simulation_running:
+            animation_tick(self, psim.GetIO().DeltaTime)
 
         # --- GUI
         self.gui()
@@ -2668,6 +2671,50 @@ class SionnaRtGui:
     # ------------------------
     # Docked workspace layout
 
+    def start_simulation(self) -> None:
+        """Begin (or resume) animating devices and refining the radio map."""
+        first_start = not self.simulation_started
+        self.simulation_running = True
+        self.simulation_started = True
+        self.animation_config.playing = True
+        self.animation_config.time_started = time.time()
+        if first_start:
+            wants_radio_map = (
+                self.compute_radio_map_on_start or self.cfg.radio_map.auto_update
+            )
+            if wants_radio_map and self.radio_map is None and self.scene._transmitters:
+                self.set_radio_map(self.compute_radio_map(), show=True)
+            if self.cfg.paths.auto_update and self.paths is None:
+                self.update_paths(show=True)
+
+    def pause_simulation(self) -> None:
+        self.simulation_running = False
+        self.animation_config.playing = False
+
+    def simulation_button(self, scale: float) -> None:
+        """
+        Start / Pause / Resume, as one button whose colour says what pressing
+        it will do: green to run, amber to hold.
+        """
+        if self.simulation_running:
+            label, color, hovered = "Pause", (0.72, 0.52, 0.16, 1.0), (0.80, 0.60, 0.20, 1.0)
+        else:
+            label = "Resume" if self.simulation_started else "Start"
+            color, hovered = (0.30, 0.52, 0.24, 1.0), (0.36, 0.60, 0.28, 1.0)
+
+        psim.PushStyleColor(psim.ImGuiCol_Button, color)
+        psim.PushStyleColor(psim.ImGuiCol_ButtonHovered, hovered)
+        pressed = psim.Button(f"{label}##simulation", (76 * scale, 0))
+        psim.PopStyleColor(2)
+        if psim.IsItemHovered():
+            psim.SetTooltip(
+                "Pause the animation and stop refining the radio map"
+                if self.simulation_running
+                else "Animate the devices and compute the radio results"
+            )
+        if pressed:
+            self.pause_simulation() if self.simulation_running else self.start_simulation()
+
     def set_docked_layout(self, docked: bool) -> None:
         """Switch between the docked workspace and floating windows."""
         if self.cfg.use_docked_layout == docked:
@@ -2714,6 +2761,8 @@ class SionnaRtGui:
     def _workspace_topbar(self, rect, scale: float) -> None:
         psim.PushStyleVar(psim.ImGuiStyleVar_WindowPadding, (8 * scale, 3 * scale))
         if begin_area("##topbar", rect, background=HEADER_BG):
+            self.simulation_button(scale)
+            psim.SameLine()
             psim.AlignTextToFramePadding()
             psim.TextColored((*ACCENT_BRIGHT, 1.0), "SIONNA RT")
             psim.SameLine()
@@ -2810,10 +2859,35 @@ class SionnaRtGui:
                     psim.SetTooltip(spec.note)
 
             psim.Dummy((0.0, 6 * scale))
-            area_header("Select", scale)
-            psim.PushTextWrapPos(0.0)
-            psim.TextDisabled("Click any object in the 3D view to edit it.")
-            psim.PopTextWrapPos()
+            area_header("Show", scale)
+            for label, key in (
+                ("Radio map", "radio_maps"),
+                ("Paths", "paths"),
+                ("Devices", "rd"),
+                ("Scene", "scene"),
+            ):
+                group = self.ps_groups.get(key)
+                if group is None:
+                    continue
+                names = list(group.get_child_structure_names())
+                visible = any(
+                    struct.is_enabled()
+                    for struct in (self._find_structure(n) for n in names)
+                    if struct is not None
+                )
+                changed, visible = psim.Checkbox(f"{label}##show_{key}", visible)
+                if changed:
+                    group.set_enabled(visible)
+                    for name in names:
+                        struct = self._find_structure(name)
+                        if struct is not None:
+                            struct.set_enabled(visible)
+            if self.slice_plane is not None:
+                changed, active = psim.Checkbox(
+                    "Slice plane##show", self.slice_plane.get_active()
+                )
+                if changed:
+                    self.set_slice_plane_active(active)
         end_area()
 
     @staticmethod

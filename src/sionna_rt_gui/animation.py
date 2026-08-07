@@ -210,12 +210,9 @@ def animation_gui(gui: "SionnaRtGui"):
     """
     GUI for the main animation controls.
     """
-    was_playing = gui.animation_config.playing
-    toggled = psim.Button("Pause" if was_playing else "Resume")
-    if toggled:
-        gui.animation_config.playing = not gui.animation_config.playing
-        if gui.animation_config.playing:
-            gui.animation_config.time_started = time.time()
+    # The same Start / Pause / Resume control as the top bar, so the two can
+    # never disagree about whether the simulation is running.
+    gui.simulation_button(gui.ui_scale)
 
     psim.SameLine()
     if psim.Button("Restart##animation"):
