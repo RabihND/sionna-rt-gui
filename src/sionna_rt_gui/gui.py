@@ -3486,8 +3486,9 @@ class SionnaRtGui:
         self.phy_metrics_stats = None
         self.nr_link_stats = None
         self.link_metrics_time = 0.0
-        # The cheap system-level figures come back on their own
-        self.phy_auto_measure = True
+        # Stay cleared until asked again: measuring straight away would put the
+        # numbers back on screen and look as though nothing had been reset.
+        self.phy_auto_measure = False
 
     def transport_gui(self, scale: float) -> None:
         """
