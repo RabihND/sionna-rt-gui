@@ -1173,45 +1173,46 @@ class SionnaRtGui:
         self.reset_accumulation_requested = True
         return True
 
+    def camera_ray(self, screen_coords) -> mi.Ray3f:
+        """Ray from the camera through the given screen position."""
+        width, height = ps.get_window_size()
+        camera_to_world = np.linalg.inv(ps.get_camera_view_matrix())
+        fov_vertical_deg = ps.get_view_camera_parameters().get_fov_vertical_deg()
+        tan_half_fov = np.tan(np.radians(fov_vertical_deg) / 2.0)
+        aspect = width / max(height, 1)
+
+        # Normalized device coordinates, with the camera looking down -z
+        u = 2.0 * screen_coords[0] / max(width, 1) - 1.0
+        v = 1.0 - 2.0 * screen_coords[1] / max(height, 1)
+        direction = (
+            u * tan_half_fov * aspect * camera_to_world[:3, 0]
+            + v * tan_half_fov * camera_to_world[:3, 1]
+            - camera_to_world[:3, 2]
+        )
+        direction /= np.linalg.norm(direction)
+        return mi.Ray3f(
+            mi.Point3f(*camera_to_world[:3, 3].tolist()),
+            mi.Vector3f(*direction.tolist()),
+        )
+
     def resolve_scene_object_at(
         self, screen_coords, pick_result: ps.PickResult | None = None
     ) -> tuple[str | None, np.ndarray | None]:
         """
-        Find the scene object under the given screen position. Returns its
-        name and the world-space hit point, or (None, None).
+        Find the scene object under the given screen position, by tracing a ray
+        into the scene itself. This works in every rendering mode, including the
+        ray-traced view where the rasterized meshes are hidden and so cannot be
+        picked by Polyscope.
         """
-        if pick_result is None:
-            pick_result = ps.pick(screen_coords=screen_coords)
-
-        if pick_result.is_hit:
-            mesh_to_object = {
-                o.mi_mesh.id(): name for name, o in self.scene.objects.items()
-            }
-            object_name = mesh_to_object.get(pick_result.structure_name)
-            if object_name is not None:
-                return object_name, np.asarray(pick_result.position)
-
-        # In ray-traced mode the raster meshes are hidden and not pickable:
-        # resolve the point via the depth buffer and take the smallest object
-        # whose bounds contain it.
-        world = ps.screen_coords_to_world_position(screen_coords)
-        if not np.all(np.isfinite(world)):
+        si = self.scene.mi_scene.ray_intersect(self.camera_ray(screen_coords))
+        if not bool(si.is_valid().numpy().item()):
             return None, None
-        margin = 0.5
-        best_volume = np.inf
-        best: tuple[str, np.ndarray] | None = None
+
+        point = si.p.numpy().squeeze()
         for name, scene_object in self.scene.objects.items():
-            bbox = scene_object.mi_mesh.bbox()
-            low = np.array(bbox.min) - margin
-            high = np.array(bbox.max) + margin
-            if np.all(world >= low) and np.all(world <= high):
-                volume = float(np.prod(np.array(bbox.extents()) + 1))
-                if volume < best_volume:
-                    best_volume = volume
-                    best = (name, world)
-        if best is None:
-            return None, None
-        return best
+            if bool(dr.all(si.shape == mi.ShapePtr(scene_object.mi_mesh))):
+                return name, point
+        return None, None
 
     def asset_drop_position(self) -> np.ndarray:
         """
@@ -1793,34 +1794,34 @@ class SionnaRtGui:
                         self.update_paths(clear_first=True, show=True)
             return True
 
-        if not pick_result.is_hit:
-            self.clear_selection()
-            return False
-
-        if pick_result.structure_name == "radio_map":
+        if pick_result.is_hit and pick_result.structure_name == "radio_map":
             self.set_rm_probe(pick_result.position)
             return True
 
-        if "index" not in pick_result.structure_data:
-            # Scene geometry: select the object so it can be edited
-            mesh_to_object = {
-                o.mi_mesh.id(): name for name, o in self.scene.objects.items()
-            }
-            object_name = mesh_to_object.get(pick_result.structure_name)
-            if object_name is not None:
-                self.select_scene_object(object_name)
+        # A radio device: the point clouds carry the device index. Match the
+        # structure name exactly, since scene meshes also report an index.
+        devices = {
+            "Transmitters": (self.scene._transmitters, SelectionType.Transmitter),
+            "Receivers": (self.scene._receivers, SelectionType.Receiver),
+        }
+        if pick_result.is_hit and pick_result.structure_name in devices:
+            collection, selection_type = devices[pick_result.structure_name]
+            index = pick_result.structure_data.get("index")
+            values = list(collection.values())
+            if index is not None and 0 <= index < len(values):
+                self.selected_object = values[index]
+                self.selected_type = selection_type
+                self.properties_tab = PROPERTIES_TABS.index("Object")
                 return True
-            self.clear_selection()
-            return False
 
-        picked_index = pick_result.structure_data["index"]
-        if pick_result.structure_name in "Transmitters":
-            self.selected_object = list(self.scene._transmitters.values())[picked_index]
-            self.selected_type = SelectionType.Transmitter
-            return True
-        elif pick_result.structure_name in "Receivers":
-            self.selected_object = list(self.scene._receivers.values())[picked_index]
-            self.selected_type = SelectionType.Receiver
+        # Otherwise a scene object. This also covers the ray-traced view, where
+        # the rasterized meshes are hidden and so cannot be picked directly:
+        # the point is then resolved through the depth buffer.
+        object_name, _ = self.resolve_scene_object_at(
+            pick_result.screen_coords, pick_result=pick_result
+        )
+        if object_name is not None:
+            self.select_scene_object(object_name)
             return True
 
         self.clear_selection()
