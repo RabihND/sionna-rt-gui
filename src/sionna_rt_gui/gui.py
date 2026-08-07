@@ -2743,10 +2743,14 @@ class SionnaRtGui:
         self.animation_config.playing = True
         self.animation_config.time_started = time.time()
         if first_start:
-            wants_radio_map = (
-                self.compute_radio_map_on_start or self.cfg.radio_map.auto_update
-            )
-            if wants_radio_map and self.radio_map is None and self.scene._transmitters:
+            # A radio map is only built when the scenario asked for one: the
+            # radio map's auto-update means "refresh the existing map", not
+            # "create one", and computing it unasked is expensive.
+            if (
+                self.compute_radio_map_on_start
+                and self.radio_map is None
+                and self.scene._transmitters
+            ):
                 self.set_radio_map(self.compute_radio_map(), show=True)
             if self.cfg.paths.auto_update and self.paths is None:
                 self.update_paths(show=True)
@@ -2825,8 +2829,6 @@ class SionnaRtGui:
     def _workspace_topbar(self, rect, scale: float) -> None:
         psim.PushStyleVar(psim.ImGuiStyleVar_WindowPadding, (8 * scale, 3 * scale))
         if begin_area("##topbar", rect, background=HEADER_BG):
-            self.simulation_button(scale)
-            psim.SameLine()
             psim.AlignTextToFramePadding()
             psim.TextColored((*ACCENT_BRIGHT, 1.0), "SIONNA RT")
             psim.SameLine()
