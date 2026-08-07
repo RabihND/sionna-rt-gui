@@ -147,3 +147,109 @@ def link_metrics(
         "num_ofdm_symbols": num_ofdm_symbols,
         "num_subcarriers": int(sinr_per_subcarrier.size),
     }
+
+
+# Built once: constructing a transmitter and receiver is slow, running them is not
+_nr_link = None
+
+
+def _nr_components():
+    """The 5G NR uplink transmitter and receiver, built once."""
+    global _nr_link
+    if _nr_link is None:
+        _prepare_tensorflow()
+        from sionna.phy.nr import PUSCHConfig, PUSCHReceiver, PUSCHTransmitter
+
+        config = PUSCHConfig()
+        transmitter = PUSCHTransmitter(config, verbose=False)
+        # The transport block's check tells us whether the slot was really
+        # delivered; a bit error rate alone would suggest throughput on a link
+        # that in fact carries nothing.
+        receiver = PUSCHReceiver(transmitter, return_tb_crc_status=True)
+        _nr_link = (transmitter, receiver)
+    return _nr_link
+
+
+def nr_link(
+    a: np.ndarray,
+    tau: np.ndarray,
+    tx_power_w: float,
+    noise_power_w: float,
+    num_slots: int = 1,
+) -> dict | None:
+    """
+    Send 5G NR uplink slots through the traced channel and count the bit errors.
+
+    The channel comes from the ray tracer, the waveform, coding, pilots and
+    receiver from sionna's physical layer. Coefficients travel through host
+    memory rather than the device, so TensorFlow never has to share the GPU with
+    the tracer.
+    """
+    if not available():
+        return None
+    try:
+        import tensorflow as tf
+        from sionna.phy.channel import (
+            ApplyOFDMChannel,
+            cir_to_ofdm_channel,
+            subcarrier_frequencies,
+        )
+
+        transmitter, receiver = _nr_components()
+        grid = transmitter.resource_grid
+        frequencies = subcarrier_frequencies(grid.fft_size, grid.subcarrier_spacing)
+
+        # [batch, rx, rx_ant, tx, tx_ant, paths, time] as the physical layer expects
+        a_tf = tf.constant(np.asarray(a)[None, ...], dtype=tf.complex64)
+        tau_tf = tf.constant(np.asarray(tau)[None, ...], dtype=tf.float32)
+        h_freq = cir_to_ofdm_channel(frequencies, a_tf, tau_tf, normalize=False)
+
+        # Absolute powers, spread over the grid
+        per_subcarrier_tx = max(tx_power_w, 1e-30) / grid.fft_size
+        per_subcarrier_no = max(noise_power_w, 1e-30) / grid.fft_size
+        h_scaled = tf.cast(np.sqrt(per_subcarrier_tx), tf.complex64) * h_freq
+        no = tf.constant(per_subcarrier_no, tf.float32)
+
+        apply_channel = ApplyOFDMChannel()
+        errors = 0
+        total = 0
+        blocks = 0
+        blocks_delivered = 0
+        for _ in range(max(int(num_slots), 1)):
+            x, bits = transmitter(1)
+            y = apply_channel(x, h_scaled, no)
+            bits_hat, crc_ok = receiver(y, no)
+            errors += int(
+                tf.reduce_sum(tf.cast(tf.not_equal(bits, bits_hat), tf.int32)).numpy()
+            )
+            total += int(np.prod(bits.shape))
+            status = np.asarray(crc_ok.numpy()).ravel()
+            blocks += status.size
+            blocks_delivered += int(np.count_nonzero(status))
+
+        mean_gain = float(tf.reduce_mean(tf.abs(h_freq) ** 2))
+        snr_db = 10.0 * np.log10(
+            max(per_subcarrier_tx * mean_gain / per_subcarrier_no, 1e-30)
+        )
+        slot_seconds = grid.num_ofdm_symbols / max(grid.subcarrier_spacing, 1.0)
+        bits_per_slot = total / max(int(num_slots), 1)
+        # Only blocks that pass their check carry data
+        delivered_fraction = blocks_delivered / max(blocks, 1)
+        return {
+            "ber": errors / max(total, 1),
+            "bit_errors": errors,
+            "bits": total,
+            "slots": int(num_slots),
+            "blocks": blocks,
+            "blocks_delivered": blocks_delivered,
+            "bler": 1.0 - delivered_fraction,
+            "snr_db": snr_db,
+            "bits_per_slot": int(bits_per_slot),
+            "throughput_mbps": bits_per_slot * delivered_fraction / slot_seconds / 1e6,
+            "subcarriers": int(grid.fft_size),
+            "ofdm_symbols": int(grid.num_ofdm_symbols),
+            "subcarrier_spacing_khz": grid.subcarrier_spacing / 1e3,
+        }
+    except Exception as e:
+        logging.error("The 5G NR link could not be run: %s", e)
+        return {"error": str(e)}

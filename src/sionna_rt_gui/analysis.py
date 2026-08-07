@@ -493,7 +493,15 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
             channel["snr_linear"], bler_target=gui.phy_bler_target
         )
     psim.SameLine()
-    psim.TextDisabled("evaluated over sionna's 3GPP tables")
+    psim.TextDisabled("over sionna's 3GPP tables")
+    psim.SameLine()
+    if psim.Button("Run 5G NR##phy_nr"):
+        gui.nr_link_stats = _run_nr_link(gui)
+    if psim.IsItemHovered():
+        psim.SetTooltip(
+            "Send coded 5G NR uplink slots through this channel and count the\n"
+            "bit errors. Uses sionna's waveform, pilots, coding and receiver."
+        )
 
     stats = gui.phy_metrics_stats
     available_width = psim.GetContentRegionAvail()[0]
@@ -525,6 +533,32 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
             f"Shannon capacity of the same channel: "
             f"{channel['capacity_mbps']:.1f} Mbit/s"
         )
+
+    nr = gui.nr_link_stats
+    if nr is not None:
+        psim.Spacing()
+        if "error" in nr:
+            psim.TextColored((0.92, 0.45, 0.40, 1.0), f"5G NR link failed: {nr['error']}")
+        else:
+            delivered = nr["blocks_delivered"]
+            if delivered:
+                psim.TextColored(
+                    (*ACCENT_BRIGHT, 1.0),
+                    f"5G NR uplink: {nr['throughput_mbps']:.2f} Mbit/s, "
+                    f"bit error rate {nr['ber']:.2e}",
+                )
+            else:
+                psim.TextColored(
+                    (0.92, 0.55, 0.30, 1.0),
+                    "5G NR uplink: nothing delivered, every block failed its check",
+                )
+            psim.TextDisabled(
+                f"{delivered} of {nr['blocks']} transport block(s) passed, "
+                f"{nr['bit_errors']} of {nr['bits']} coded bits wrong, "
+                f"{nr['subcarriers']} subcarriers at "
+                f"{nr['subcarrier_spacing_khz']:.0f} kHz, per-element SNR "
+                f"{nr['snr_db']:.1f} dB"
+            )
     else:
         psim.Spacing()
         psim.TextDisabled("Press Measure to evaluate the link.")
@@ -574,3 +608,25 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
         "signal-to-noise ratio [dB] across the band",
     )
     psim.Dummy((available_width, plot_height + 16 * scale))
+
+
+def _run_nr_link(gui: "SionnaRtGui") -> dict | None:
+    """Feed the traced channel of the selected pair into sionna's 5G NR link."""
+    from . import phy_metrics
+
+    if gui.paths is None:
+        return {"error": "no paths computed"}
+    a, tau = gui.paths.cir(out_type="numpy", normalize_delays=True)
+    rx_index, tx_index = gui.cir_pair
+    # One pair at a time, with the axes the physical layer expects
+    a_pair = a[rx_index : rx_index + 1, :, tx_index : tx_index + 1, ...]
+    tau_pair = (
+        tau[rx_index : rx_index + 1, tx_index : tx_index + 1, ...]
+        if tau.ndim == 3
+        else tau[rx_index : rx_index + 1, :, tx_index : tx_index + 1, ...]
+    )
+    tx_power_w = 10.0 ** (gui.link_budget_tx_power_dbm(tx_index) / 10.0) / 1000.0
+    noise_w = float(gui.scene.thermal_noise_power[0]) * 10.0 ** (
+        gui.cfg.noise_figure_db / 10.0
+    )
+    return phy_metrics.nr_link(a_pair, tau_pair, tx_power_w, noise_w)

@@ -31,6 +31,7 @@ from .animation import (
     animation_tick,
     apply_trajectory_position,
     propagate_device_updates,
+    restart_trajectories,
 )
 from .antenna_array import antenna_array_gui
 from .assets import (
@@ -302,6 +303,7 @@ class SionnaRtGui:
         self.phy_metrics_stats: dict | None = None
         self.phy_bler_target: float = 0.1
         self.phy_auto_measure: bool = True
+        self.nr_link_stats: dict | None = None
         self.coverage_threshold_dbm: float = -95.0
         # Solver work per frame, steered by the measured frame time
         self._rm_refine_samples: int = 0
@@ -3472,6 +3474,32 @@ class SionnaRtGui:
                     self.section_rendering()
         end_area()
 
+    def transport_gui(self, scale: float) -> None:
+        """
+        Start / pause, restart and speed, compact enough to live in the bottom
+        area's header so they stay reachable whichever editor is open.
+        """
+        self.simulation_button(scale)
+        psim.SameLine()
+        if psim.Button("Restart##transport"):
+            restart_trajectories(self)
+        if psim.IsItemHovered():
+            psim.SetTooltip("Send every animated device back to the start of its path")
+        psim.SameLine()
+        psim.PushItemWidth(78 * scale)
+        speeds = [0.5, 1.0, 2.0, 5.0, 10.0, 50.0]
+        labels = [f"{speed:g}x" for speed in speeds]
+        current = min(
+            range(len(speeds)),
+            key=lambda i: abs(speeds[i] - self.animation_config.speed_multiplier),
+        )
+        changed, chosen = psim.Combo("##transport_speed", current, labels)
+        psim.PopItemWidth()
+        if changed:
+            self.animation_config.speed_multiplier = speeds[chosen]
+        if psim.IsItemHovered():
+            psim.SetTooltip("How fast animated devices move")
+
     def _workspace_timeline(self, rect, scale: float) -> None:
         if rect[3] < 8 * scale:
             return
@@ -3493,6 +3521,27 @@ class SionnaRtGui:
             psim.SameLine()
             psim.AlignTextToFramePadding()
             psim.TextDisabled(BOTTOM_TABS[self.bottom_tab].upper())
+
+            # The transport belongs to the whole application, not to one editor
+            style = psim.GetStyle()
+            transport_width = (
+                76 * scale
+                + psim.CalcTextSize("Restart")[0]
+                + 2 * style.FramePadding[0]
+                + 78 * scale
+                + 2 * style.ItemSpacing[0]
+            )
+            psim.SameLine()
+            psim.SetCursorPosX(
+                max(
+                    psim.GetCursorPosX(),
+                    psim.GetCursorPosX()
+                    + psim.GetContentRegionAvail()[0]
+                    - transport_width
+                    - style.WindowPadding[0],
+                )
+            )
+            self.transport_gui(scale)
             if self.bottom_tab != previous_tab and BOTTOM_TABS[self.bottom_tab] != "Timeline":
                 # The plots need more room than the transport controls
                 self.layout.timeline_height = max(self.layout.timeline_height, 300.0)
@@ -3525,7 +3574,7 @@ class SionnaRtGui:
                     end_area()
                     return
 
-            animation_gui(self)
+            psim.Dummy((0.0, 2 * scale))
             # Scrub the selected device's trajectory, when it has one
             if self.selected_object is not None and self.selected_type in (
                 SelectionType.Transmitter,
