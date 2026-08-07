@@ -142,13 +142,13 @@ def link_budget(gui: "SionnaRtGui", rx_index: int = 0, tx_index: int = 0) -> dic
 
 def link_simulation(gui: "SionnaRtGui", rx_index: int = 0, tx_index: int = 0) -> dict | None:
     """
-    Send symbols through the traced channel with real noise added.
+    Quality of the traced channel across an OFDM grid: the frequency response
+    from the path coefficients, the signal-to-noise ratio per subcarrier against
+    the noise floor, and the resulting Shannon capacity.
 
-    sionna-rt provides the channel and the noise power but not a transmission
-    chain (that lives in the sionna PHY package, which is not installed here), so
-    the frequency response is built from the path coefficients, complex Gaussian
-    noise is drawn at the computed noise power, and what a zero-forcing receiver
-    would see is measured directly.
+    These are definitions rather than a simulated transmission. Sending symbols,
+    coding them and counting errors is the job of sionna's physical layer
+    package, which is not installed alongside sionna-rt.
     """
     if gui.paths_cir is None:
         return None
@@ -186,32 +186,6 @@ def link_simulation(gui: "SionnaRtGui", rx_index: int = 0, tx_index: int = 0) ->
     noise_per_subcarrier = thermal_w / n_subcarriers
     snr = signal / max(noise_per_subcarrier, 1e-30)
 
-    # Actual noise, actually added: 16-QAM symbols through the channel and a
-    # zero-forcing receiver, so the numbers come from samples and not a formula
-    rng = np.random.default_rng(gui.cfg.paths.seed)
-    levels = np.array([-3.0, -1.0, 1.0, 3.0])
-    symbols = (
-        rng.choice(levels, n_subcarriers) + 1j * rng.choice(levels, n_subcarriers)
-    ) / np.sqrt(10.0)
-    scale = np.sqrt(tx_power_w / n_subcarriers)
-    noise = np.sqrt(noise_per_subcarrier / 2.0) * (
-        rng.standard_normal(n_subcarriers) + 1j * rng.standard_normal(n_subcarriers)
-    )
-    received = scale * response * symbols + noise
-    equalised = received / (scale * response)
-    error = equalised - symbols
-    evm = float(np.sqrt(np.mean(np.abs(error) ** 2) / np.mean(np.abs(symbols) ** 2)))
-
-    # Nearest-constellation-point decisions, to count real symbol errors
-    def quantise(values):
-        return levels[np.argmin(np.abs(values[:, None] - levels[None, :]), axis=1)]
-
-    decided = (
-        quantise(equalised.real * np.sqrt(10.0))
-        + 1j * quantise(equalised.imag * np.sqrt(10.0))
-    ) / np.sqrt(10.0)
-    symbol_errors = int(np.count_nonzero(~np.isclose(decided, symbols, atol=1e-6)))
-
     capacity_bps = float(np.sum(np.log2(1.0 + snr)) * spacing)
     return {
         "paths": int(coefficients.size),
@@ -224,9 +198,6 @@ def link_simulation(gui: "SionnaRtGui", rx_index: int = 0, tx_index: int = 0) ->
             10.0 * np.log10(np.max(np.abs(response) ** 2) / np.min(np.abs(response) ** 2))
         ),
         "capacity_mbps": capacity_bps / 1e6,
-        "evm_percent": 100.0 * evm,
-        "symbol_errors": symbol_errors,
-        "symbol_error_rate": symbol_errors / n_subcarriers,
     }
 
 
@@ -423,8 +394,17 @@ def link_budget_contents(gui: "SionnaRtGui") -> None:
         refresh_statistics(gui, force=True)
 
 
+def phy_available() -> bool:
+    """Whether sionna's physical layer package is installed alongside sionna-rt."""
+    try:
+        import sionna.phy  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 def link_simulation_contents(gui: "SionnaRtGui") -> None:
-    """What a receiver would actually see, with noise added to the symbols."""
+    """Channel quality across the band, and what a full link would need."""
     if not gui.cfg.paths.compute_cir:
         psim.TextDisabled("Enable the channel impulse response first.")
         return
@@ -447,12 +427,15 @@ def link_simulation_contents(gui: "SionnaRtGui") -> None:
     )
     psim.Text(f"Frequency selectivity: {stats['flatness_db']:.1f} dB across the band")
     psim.Spacing()
-    psim.Text(
-        f"16-QAM with noise added: EVM {stats['evm_percent']:.2f}%, "
-        f"{stats['symbol_errors']} of {stats['subcarriers']} symbols wrong"
-    )
-    psim.TextDisabled(
-        "Noise is drawn at the computed floor and added to the symbols, then a "
-        "zero-forcing receiver decides: these are measured, not predicted."
-    )
+    if phy_available():
+        psim.TextDisabled(
+            "Sionna's physical layer package is available, so a standards-based "
+            "link (5G NR or generic OFDM) can be run from these channels."
+        )
+    else:
+        psim.TextDisabled(
+            "Bit and block error rates need a waveform, coding and a receiver, "
+            "which live in sionna's physical layer package. Only sionna-rt is "
+            "installed here, so the figures above stop at the channel itself."
+        )
     psim.PopTextWrapPos()

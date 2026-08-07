@@ -140,9 +140,21 @@ HELP_WINDOW_TABLES = {
         "F": "Fit scene to camera",
     },
     "Mouse bindings": {
-        "Left click": "Select a radio device, or probe the radio map",
-        f"{CTRL_OR_CMD} + left click": "Add transmitter",
-        f"{CTRL_OR_CMD} + right click": "Add receiver",
+        "Left click": "Select a device, a building or a placed asset",
+        "Left click on a radio map": "Probe its value at that point",
+        "Right click": "Context menu: add here, select, probe, camera",
+        f"{CTRL_OR_CMD} + left click": "Add transmitter at that point",
+        f"{CTRL_OR_CMD} + right click": "Add receiver at that point",
+        "Drag the gizmo": "Move the selected object",
+    },
+    "Interface": {
+        "Left column": "Add devices and assets, toggle what is shown",
+        "Outliner (top right)": "Scene tree: click to select, expand for detail",
+        "Properties (right)": "Tabs: object, devices, radio map, paths, analysis",
+        "Timeline (bottom)": "Start / pause, speed, and the impulse response",
+        f"{CTRL_OR_CMD} + click a number": "Type an exact value instead of dragging",
+        "Drag an area border": "Resize the panels",
+        "Tab": "Hide or show the whole interface",
     },
     "Key bindings": {
         "H / ?": "Show this help window",
@@ -150,7 +162,7 @@ HELP_WINDOW_TABLES = {
         "L": "Add receiver at the current mouse position",
         "M": "Show / hide radio map. Requires at least one transmitter.",
         "C": "Go to next rendering mode",
-        "Tab": "Go to next GUI mode (can be used to hide the GUI)",
+        "Tab": "Hide or show the interface",
         "Esc": "Close help window or de-select current object",
         "Del (with item selected)": "Delete radio device",
         "Shift + R": "Reload application",
@@ -3368,7 +3380,7 @@ class SionnaRtGui:
                     ):
                         link_budget_contents(self)
                     if psim.CollapsingHeader(
-                        "Transmission", psim.ImGuiTreeNodeFlags_DefaultOpen
+                        "Channel quality", psim.ImGuiTreeNodeFlags_DefaultOpen
                     ):
                         link_simulation_contents(self)
                     if psim.CollapsingHeader(
@@ -3653,12 +3665,15 @@ class SionnaRtGui:
             psim.ImGuiCond_FirstUseEver,
         )
 
-        _, self.cfg.show_help_window = psim.Begin(
+        # Note: ImGuiWindowFlags_Modal is an internal flag for popups. Passing it
+        # to Begin makes it report the window as closed, which was written back
+        # into the setting and switched help off a frame after opening it.
+        _, keep_open = psim.Begin(
             "Controls & shortcuts###help_window",
             open=True,
-            flags=psim.ImGuiWindowFlags_Modal
-            | psim.ImGuiWindowFlags_NoFocusOnAppearing,
+            flags=psim.ImGuiWindowFlags_NoFocusOnAppearing,
         )
+        self.cfg.show_help_window = keep_open
 
         psim.TextColored((*ACCENT_BRIGHT, 1.0), "S I O N N A   R T")
         psim.TextDisabled(

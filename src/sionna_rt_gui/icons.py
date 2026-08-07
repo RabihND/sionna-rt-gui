@@ -31,16 +31,21 @@ def _polyline(draw_list, points, color, thickness=1.6, closed=False):
 
 
 def transmitter(draw_list, x, y, size, color, scale=1.0):
-    """A mast radiating: a vertical stem with expanding arcs."""
-    cx, base, top = x + size * 0.5, y + size * 0.86, y + size * 0.24
+    """
+    A mast radiating: a vertical stem with expanding arcs. The arcs are centred
+    low enough that the widest one still fits inside the icon's square.
+    """
+    cx = x + size * 0.5
+    base = y + size * 0.88
+    top = y + size * 0.34
     draw_list.AddLine((cx, base), (cx, top), color, 1.8 * scale)
-    draw_list.AddCircleFilled((cx, top), size * 0.08, color)
-    for i, radius in enumerate((0.18, 0.30, 0.42)):
+    draw_list.AddCircleFilled((cx, top), size * 0.07, color)
+    for i, radius in enumerate((0.14, 0.22, 0.30)):
         alpha = 1.0 - 0.22 * i
         faded = (color & 0x00FFFFFF) | (int(255 * alpha) << 24)
         draw_list.AddCircle((cx, top), size * radius, faded, 24, 1.4 * scale)
     draw_list.AddLine(
-        (cx - size * 0.16, base), (cx + size * 0.16, base), color, 1.8 * scale
+        (cx - size * 0.15, base), (cx + size * 0.15, base), color, 1.8 * scale
     )
 
 
@@ -62,10 +67,11 @@ def receiver(draw_list, x, y, size, color, scale=1.0):
     draw_list.AddCircleFilled(
         (0.5 * (left + right), bottom - size * 0.06), size * 0.028, color
     )
-    # Incoming signal: arcs centred on the top right corner
-    corner = (right - size * 0.02, top + size * 0.02)
+    # Incoming signal: arcs centred on the top right corner, sized to stay
+    # within the icon's square
+    corner = (right - size * 0.02, top + size * 0.04)
     angles = np.linspace(-np.pi * 0.52, 0.02, 14)
-    for i, radius in enumerate((0.17, 0.28, 0.39)):
+    for i, radius in enumerate((0.14, 0.23, 0.32)):
         alpha = 1.0 - 0.2 * i
         arc = [
             (corner[0] + size * radius * np.cos(a), corner[1] + size * radius * np.sin(a))
