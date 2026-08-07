@@ -257,6 +257,10 @@ class SionnaRtGui:
         # CIR level axis (None = seed from the data on first use)
         self.cir_auto_level: bool = True
         self.cir_max_db: float | None = None
+        # Devices pointed at a target: device name -> target name, plus the
+        # positions each was last aimed from and at
+        self.look_at_targets: dict[str, str] = {}
+        self._look_at_state: dict[str, tuple] = {}
         # Devices attached to scene objects: device name ->
         # {"object": object name, "offset": device minus object position}
         self.attachments: dict[str, dict] = {}
@@ -763,6 +767,9 @@ class SionnaRtGui:
         if self.simulation_running:
             animation_tick(self, psim.GetIO().DeltaTime)
 
+        # --- Devices that are locked onto a target follow it
+        self.apply_look_at_targets()
+
         # --- GUI
         self.gui()
         self.frame_i += 1
@@ -1149,6 +1156,12 @@ class SionnaRtGui:
         if object.name in self.animation_config.trajectories:
             del self.animation_config.trajectories[object.name]
         self.attachments.pop(object.name, None)
+        self.look_at_targets.pop(object.name, None)
+        self._look_at_state.pop(object.name, None)
+        # Anything that was pointed at it stops tracking
+        for name, target in list(self.look_at_targets.items()):
+            if target == object.name:
+                self.look_at_targets.pop(name, None)
 
     def attach_device_to_object(
         self,
@@ -2181,6 +2194,62 @@ class SionnaRtGui:
         if psim.MenuItem("Top view"):
             self.move_camera_top()
         psim.EndPopup()
+
+    def set_look_at_target(self, device: rt.RadioDevice, target_name: str | None) -> None:
+        """
+        Keep a device pointed at another device or a scene object. Sionna's
+        look_at only sets the orientation once, so the target is remembered and
+        re-applied whenever either of them moves.
+        """
+        if target_name is None:
+            self.look_at_targets.pop(device.name, None)
+            self._look_at_state.pop(device.name, None)
+            return
+        self.look_at_targets[device.name] = target_name
+        self._look_at_state.pop(device.name, None)
+        self.apply_look_at_targets(force=True)
+
+    def look_at_target_position(self, target_name: str) -> np.ndarray | None:
+        """Where a look-at target currently is."""
+        target = self.scene.get(target_name)
+        if target is None:
+            return None
+        return target.position.numpy().squeeze()
+
+    def apply_look_at_targets(self, force: bool = False) -> None:
+        """
+        Re-point every device that is tracking something. Nothing is touched
+        unless the device or its target has actually moved, so a locked device
+        costs nothing while the scene is still.
+        """
+        if not self.look_at_targets:
+            return
+
+        tx_changed = False
+        rx_changed = False
+        for device_name, target_name in list(self.look_at_targets.items()):
+            device = self.scene.get(device_name)
+            target_position = self.look_at_target_position(target_name)
+            if device is None or target_position is None:
+                self.look_at_targets.pop(device_name, None)
+                continue
+
+            device_position = device.position.numpy().squeeze()
+            state = (tuple(device_position), tuple(target_position))
+            if not force and self._look_at_state.get(device_name) == state:
+                continue
+            self._look_at_state[device_name] = state
+
+            if np.allclose(device_position, target_position, atol=1e-6):
+                continue
+            device.look_at(mi.Point3f(*[float(v) for v in target_position]))
+            dr.make_opaque(device.orientation)
+            if isinstance(device, rt.Transmitter):
+                tx_changed = True
+            else:
+                rx_changed = True
+
+        propagate_device_updates(self, tx_changed, rx_changed)
 
     def select_radio_device(self, device, selection_type) -> None:
         """Make a radio device the active object."""

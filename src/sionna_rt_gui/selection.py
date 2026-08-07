@@ -314,11 +314,16 @@ def selection_contents(
                 rd_update_needed = True
 
             orientation_deg = np.degrees(rd.orientation.numpy().squeeze())
+            is_tracking = rd.name in gui.look_at_targets
+            psim.BeginDisabled(is_tracking)
             property_row("Orientation [deg]", gui.ui_scale)
             changed, new_orientation = numeric_field3(
                 "##orientation", orientation_deg, 1.0, "%.1f"
             )
             end_property_row()
+            psim.EndDisabled()
+            if is_tracking:
+                changed = False
             if changed:
                 # Note: mi.Point3f rejects numpy scalar types, convert to float
                 rd.orientation = mi.Point3f(*np.radians(new_orientation).tolist())
@@ -364,6 +369,38 @@ def selection_contents(
                     "plays, it is overwritten with the travel velocity."
                 )
             psim.TreePop()
+
+        # --- Keep the device pointed at something
+        target_names = ["(none)"]
+        target_names += [
+            name
+            for name in list(gui.scene._transmitters.keys())
+            + list(gui.scene._receivers.keys())
+            if name != rd.name
+        ]
+        target_names += list(gui.scene.objects.keys())
+        current_target = gui.look_at_targets.get(rd.name)
+        target_index = (
+            target_names.index(current_target)
+            if current_target in target_names
+            else 0
+        )
+        property_row("Look at", gui.ui_scale)
+        changed, new_target = psim.Combo("##look_at", target_index, target_names)
+        end_property_row()
+        if psim.IsItemHovered():
+            psim.SetTooltip(
+                "Keep this device pointed at another device or an object.\n"
+                "It follows the target as either of them moves, so the\n"
+                "orientation is no longer yours to set by hand."
+            )
+        if changed:
+            gui.set_look_at_target(
+                rd, None if new_target == 0 else target_names[new_target]
+            )
+            rd_update_needed = True
+        if current_target is not None:
+            psim.TextDisabled(f"Tracking {current_target}")
 
         # --- Attach the device to a scene object (e.g. a vehicle)
         object_names = ["(none)"] + list(gui.scene.objects.keys())
