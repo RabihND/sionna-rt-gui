@@ -17,7 +17,11 @@ from sionna import rt
 from sionna.rt.scene_utils import remove_objects_duplicate_vertices
 
 from . import __version__ as GUI_VERSION
-from .analysis import coverage_contents, link_budget_contents
+from .analysis import (
+    coverage_contents,
+    link_budget_contents,
+    refresh_statistics,
+)
 from .animation import (
     AnimationConfig,
     animation_gui,
@@ -2436,6 +2440,15 @@ class SionnaRtGui:
                     self.clear_rm_probe()
             elif self.radio_map is not None:
                 psim.TextDisabled("Tip: click the radio map to probe its value.")
+
+            if self.radio_map is not None:
+                refresh_statistics(self)
+                stats = self.radio_map_stats
+                if stats and stats.get("covered"):
+                    psim.TextDisabled(
+                        f"Median {stats['rss_dbm_median']:.0f} dBm over "
+                        f"{stats['covered']} cells - see the Analysis tab"
+                    )
 
             # -- Radio map computation options
             psim.Spacing()
