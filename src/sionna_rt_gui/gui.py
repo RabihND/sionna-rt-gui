@@ -235,6 +235,10 @@ class SionnaRtGui:
         self.asset_colors: dict[str, tuple] = {}
         # Ground-like objects that clicks pass through
         self.background_objects: set[str] = set()
+        # Cached traversal of the ray-traced scene, and the scene it belongs to
+        self._visual_params = None
+        self._visual_params_of = None
+        self._visual_vertex_keys: dict[str, str] = {}
         # Sizes of the docked areas (see workspace_layout.py)
         self.layout: AreaLayout = AreaLayout()
         # Index of the visible properties tab
@@ -1011,6 +1015,51 @@ class SionnaRtGui:
             "applied_rotation": np.eye(3),
         }
 
+    def _visual_scene_vertex_key(self, mesh_id: str) -> str | None:
+        """
+        Key of a mesh's vertex buffer in the ray-traced scene. That scene is
+        built from the wireless one and prefixes shape names with their index
+        ("shape-6-car-1"), so the plain mesh id does not match.
+        """
+        if self.render_cache is None:
+            return None
+        visual_scene = self.render_cache["visual_scene"]
+        if self._visual_params_of is not visual_scene:
+            self._visual_params = mi.traverse(visual_scene)
+            self._visual_params_of = visual_scene
+            self._visual_vertex_keys = {}
+            suffix = ".vertex_positions"
+            for key in self._visual_params.keys():
+                if not key.endswith(suffix):
+                    continue
+                shape_name = key[: -len(suffix)]
+                parts = shape_name.split("-", 2)
+                base = (
+                    parts[2] if len(parts) == 3 and parts[0] == "shape" else shape_name
+                )
+                self._visual_vertex_keys[base] = key
+        return self._visual_vertex_keys.get(mesh_id)
+
+    def _update_ray_traced_geometry(self, mesh) -> None:
+        """
+        Move a mesh in the ray-traced scene as well. Without this the ray-traced
+        view keeps drawing the object at its old place, which looks like a
+        duplicate that cannot be clicked.
+        """
+        if self.render_cache is None:
+            return
+        key = self._visual_scene_vertex_key(mesh.id())
+        if key is None:
+            # Not in the ray-traced scene yet: rebuild it on the next frame
+            self.render_cache = None
+            return
+        try:
+            self._visual_params[key] = mesh.vertex_positions_buffer()
+            self._visual_params.update()
+        except Exception as e:
+            logging.debug("Could not update the ray-traced scene: %s", e)
+            self.render_cache = None
+
     def _after_geometry_edit(self, scene_object: rt.SceneObject) -> None:
         """Refresh the views after an object's geometry moved."""
         mesh = scene_object.mi_mesh
@@ -1018,16 +1067,7 @@ class SionnaRtGui:
             ps.get_surface_mesh(mesh.id()).update_vertex_positions(
                 mesh.vertex_positions_buffer().numpy().reshape(-1, 3)
             )
-        # The ray-traced view keeps its own copy of the scene
-        if self.render_cache is not None:
-            try:
-                params = mi.traverse(self.render_cache["visual_scene"])
-                key = f"{mesh.id()}.vertex_positions"
-                if key in params:
-                    params[key] = mesh.vertex_positions_buffer()
-                    params.update()
-            except Exception as e:
-                logging.debug("Could not update ray-traced scene: %s", e)
+        self._update_ray_traced_geometry(mesh)
         self.reset_accumulation_requested = True
 
     def transform_scene_object(
@@ -1176,17 +1216,7 @@ class SionnaRtGui:
                 mesh.vertex_positions_buffer().numpy().reshape(-1, 3)
             )
 
-        # The ray-traced view has its own scene: mark the moved shape dirty
-        # so its acceleration structure is rebuilt, and restart accumulation.
-        if self.render_cache is not None:
-            try:
-                params = mi.traverse(self.render_cache["visual_scene"])
-                key = f"{mesh.id()}.vertex_positions"
-                if key in params:
-                    params[key] = mesh.vertex_positions_buffer()
-                    params.update()
-            except Exception as e:
-                logging.debug("Could not update ray-traced scene: %s", e)
+        self._update_ray_traced_geometry(mesh)
         self.reset_accumulation_requested = True
         return True
 
