@@ -186,8 +186,10 @@ def propagate_device_updates(gui: "SionnaRtGui", tx_changed: bool, rx_changed: b
 
 def restart_trajectories(gui: "SionnaRtGui"):
     """
-    Move every animated device back to the start of its trajectory.
+    Move every animated device back to the start of its trajectory. Measured link
+    results belonged to the geometry being left behind, so they are discarded.
     """
+    gui.invalidate_link_metrics()
     tx_changed = False
     rx_changed = False
     for obj_name, traj in gui.animation_config.trajectories.items():

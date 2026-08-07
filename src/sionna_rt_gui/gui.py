@@ -304,6 +304,9 @@ class SionnaRtGui:
         self.phy_bler_target: float = 0.1
         self.phy_auto_measure: bool = True
         self.nr_link_stats: dict | None = None
+        # When the link was last measured, to tell whether the channel has
+        # changed underneath the results
+        self.link_metrics_time: float = 0.0
         self.coverage_threshold_dbm: float = -95.0
         # Solver work per frame, steered by the measured frame time
         self._rm_refine_samples: int = 0
@@ -3473,6 +3476,18 @@ class SionnaRtGui:
                 case "Render":
                     self.section_rendering()
         end_area()
+
+    def invalidate_link_metrics(self) -> None:
+        """
+        Forget measured link results. They describe one particular geometry, so
+        once devices move back to the start of their paths they no longer
+        describe anything in the scene.
+        """
+        self.phy_metrics_stats = None
+        self.nr_link_stats = None
+        self.link_metrics_time = 0.0
+        # The cheap system-level figures come back on their own
+        self.phy_auto_measure = True
 
     def transport_gui(self, scale: float) -> None:
         """

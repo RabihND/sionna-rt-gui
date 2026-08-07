@@ -492,11 +492,13 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
         gui.phy_metrics_stats = phy_metrics.link_metrics(
             channel["snr_linear"], bler_target=gui.phy_bler_target
         )
+        gui.link_metrics_time = time.time()
     psim.SameLine()
     psim.TextDisabled("over sionna's 3GPP tables")
     psim.SameLine()
     if psim.Button("Run 5G NR##phy_nr"):
         gui.nr_link_stats = _run_nr_link(gui)
+        gui.link_metrics_time = time.time()
     if psim.IsItemHovered():
         psim.SetTooltip(
             "Send coded 5G NR uplink slots through this channel and count the\n"
@@ -505,6 +507,17 @@ def phy_link_contents(gui: "SionnaRtGui") -> None:
 
     stats = gui.phy_metrics_stats
     available_width = psim.GetContentRegionAvail()[0]
+
+    # Results describe the geometry they were measured on
+    is_stale = (
+        stats is not None
+        and gui._last_paths_update_time > gui.link_metrics_time + 1e-6
+    )
+    if is_stale:
+        psim.SameLine()
+        psim.TextColored(
+            (0.92, 0.55, 0.30, 1.0), "- the devices have moved since"
+        )
 
     if stats is not None:
         chosen = stats["chosen"]
