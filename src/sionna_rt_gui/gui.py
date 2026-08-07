@@ -17,6 +17,7 @@ from sionna import rt
 from sionna.rt.scene_utils import remove_objects_duplicate_vertices
 
 from . import __version__ as GUI_VERSION
+from .analysis import coverage_contents, link_budget_contents
 from .animation import (
     AnimationConfig,
     animation_gui,
@@ -34,6 +35,7 @@ from .assets import (
 from sionna.rt.utils.geometry import rotation_matrix
 from sionna.rt.utils.render import scene_scale
 
+from . import icons
 from .config import (
     DEFAULT_SLICE_PLANE_NAME,
     GuiConfig,
@@ -89,6 +91,11 @@ from .workspace_layout import (
 
 # Editors available in the bottom area
 BOTTOM_TABS = ["Timeline", "Impulse response", "Antenna pattern"]
+BOTTOM_TAB_ICONS = {
+    "Timeline": icons.timeline_icon,
+    "Impulse response": icons.impulse_icon,
+    "Antenna pattern": icons.antenna,
+}
 
 # Tabs of the properties area, in display order
 PROPERTIES_TABS = [
@@ -96,10 +103,21 @@ PROPERTIES_TABS = [
     "Devices",
     "Radio map",
     "Paths",
+    "Analysis",
     "Assets",
     "Scene",
     "Render",
 ]
+PROPERTIES_TAB_ICONS = {
+    "Object": icons.object_icon,
+    "Devices": icons.transmitter,
+    "Radio map": icons.radio_map,
+    "Paths": icons.paths,
+    "Analysis": icons.impulse_icon,
+    "Assets": icons.car,
+    "Scene": icons.scene_icon,
+    "Render": icons.render_icon,
+}
 
 CTRL_OR_CMD = "Cmd" if sys.platform == "darwin" else "Ctrl"
 # Bounding-box outline drawn while picking an object to attach a device to
@@ -251,6 +269,11 @@ class SionnaRtGui:
         # Index of the visible properties tab, and of the bottom editor
         self.properties_tab: int = 0
         self.bottom_tab: int = 0
+        # Cached analysis readouts (see analysis.py)
+        self._statistics_time: float = 0.0
+        self.radio_map_stats: dict | None = None
+        self.link_budget_stats: dict | None = None
+        self.coverage_threshold_dbm: float = -95.0
         # Solver work per frame, steered by the measured frame time
         self._rm_refine_samples: int = 0
         self.solver_update_delay_s: float = 0.0
@@ -2900,21 +2923,38 @@ class SionnaRtGui:
             return
         if begin_area("##tools", rect):
             area_header("Add", scale)
-            full = (psim.GetContentRegionAvail()[0], 0.0)
-            if psim.Button("Transmitter##tools", full):
-                self.add_radio_device(
-                    self.default_new_device_position(True), is_transmitter=True
-                )
-            if psim.Button("Receiver##tools", full):
-                self.add_radio_device(
-                    self.default_new_device_position(False), is_transmitter=False
-                )
-            psim.Dummy((0.0, 4 * scale))
+            button = 34.0 * scale
+            per_row = max(int(psim.GetContentRegionAvail()[0] // (button + 6 * scale)), 1)
+
+            entries = [
+                ("tx", icons.transmitter, "Transmitter", None),
+                ("rx", icons.receiver, "Receiver", None),
+            ]
             for spec in ASSET_LIBRARY:
-                if psim.Button(f"{spec.label}##tools_{spec.key}", full):
-                    self.add_asset(spec)
-                if psim.IsItemHovered():
-                    psim.SetTooltip(spec.note)
+                entries.append(
+                    (
+                        spec.key,
+                        icons.ASSET_ICONS.get(spec.key, icons.object_icon),
+                        f"{spec.label}\n{spec.note}",
+                        spec,
+                    )
+                )
+
+            for index, (key, draw, tooltip, spec) in enumerate(entries):
+                if index % per_row != 0:
+                    psim.SameLine()
+                if icons.icon_button(f"tools_{key}", draw, button, scale, tooltip):
+                    if key == "tx":
+                        self.add_radio_device(
+                            self.default_new_device_position(True), is_transmitter=True
+                        )
+                    elif key == "rx":
+                        self.add_radio_device(
+                            self.default_new_device_position(False), is_transmitter=False
+                        )
+                    else:
+                        self.add_asset(spec)
+            psim.Dummy((0.0, 4 * scale))
 
             psim.Dummy((0.0, 6 * scale))
             area_header("Show", scale)
@@ -3073,9 +3113,22 @@ class SionnaRtGui:
     def _workspace_properties(self, rect, scale: float) -> None:
         if begin_area("##properties", rect):
             area_header("Properties", scale)
-            self.properties_tab = tab_strip(
-                PROPERTIES_TABS, self.properties_tab, scale
-            )
+            button = 30.0 * scale
+            for index, name in enumerate(PROPERTIES_TABS):
+                if index > 0:
+                    psim.SameLine()
+                if icons.icon_button(
+                    f"proptab_{name}",
+                    PROPERTIES_TAB_ICONS[name],
+                    button,
+                    scale,
+                    name,
+                    active=index == self.properties_tab,
+                ):
+                    self.properties_tab = index
+            psim.Dummy((0.0, 2 * scale))
+            psim.Separator()
+            psim.TextDisabled(PROPERTIES_TABS[self.properties_tab].upper())
             psim.Dummy((0.0, 2 * scale))
             match PROPERTIES_TABS[self.properties_tab]:
                 case "Object":
@@ -3086,6 +3139,15 @@ class SionnaRtGui:
                     self.section_radio_map()
                 case "Paths":
                     self.section_paths()
+                case "Analysis":
+                    if psim.CollapsingHeader(
+                        "Link budget", psim.ImGuiTreeNodeFlags_DefaultOpen
+                    ):
+                        link_budget_contents(self)
+                    if psim.CollapsingHeader(
+                        "Coverage", psim.ImGuiTreeNodeFlags_DefaultOpen
+                    ):
+                        coverage_contents(self)
                 case "Assets":
                     self.section_assets()
                 case "Scene":
@@ -3100,7 +3162,22 @@ class SionnaRtGui:
             return
         if begin_area("##timeline", rect):
             previous_tab = self.bottom_tab
-            self.bottom_tab = tab_strip(BOTTOM_TABS, self.bottom_tab, scale)
+            button = 28.0 * scale
+            for index, name in enumerate(BOTTOM_TABS):
+                if index > 0:
+                    psim.SameLine()
+                if icons.icon_button(
+                    f"bottomtab_{name}",
+                    BOTTOM_TAB_ICONS[name],
+                    button,
+                    scale,
+                    name,
+                    active=index == self.bottom_tab,
+                ):
+                    self.bottom_tab = index
+            psim.SameLine()
+            psim.AlignTextToFramePadding()
+            psim.TextDisabled(BOTTOM_TABS[self.bottom_tab].upper())
             if self.bottom_tab != previous_tab and BOTTOM_TABS[self.bottom_tab] != "Timeline":
                 # The plots need more room than the transport controls
                 self.layout.timeline_height = max(self.layout.timeline_height, 300.0)
@@ -3195,6 +3272,14 @@ class SionnaRtGui:
         self.update_attach_highlight()
 
         if self.cfg.gui_mode == GuiMode.HIDDEN:
+            # Tab hides the interface, which is useful for a clean view but
+            # looks like a failure without a way back on screen.
+            scale = self.ui_scale
+            psim.GetForegroundDrawList().AddText(
+                (12 * scale, 10 * scale),
+                im_col32(0.62, 0.64, 0.65, 0.85),
+                "Interface hidden - press Tab to show it",
+            )
             return
 
         self.viewport_context_menu()
