@@ -81,6 +81,11 @@ class RadioMapConfig:
     measurement_surface: str | None = None
     # precoding_vec: tuple[mi.TensorXf, mi.TensorXf] | None = None
     log_samples_per_it: float = 8.0
+    # Russian roulette: start depth (-1 disables) and survival probability
+    rr_depth: int = -1
+    rr_prob: float = 0.95
+    # Give up on a ray once its contribution falls this far, in dB (None = off)
+    stop_threshold_db: float | None = None
     max_depth: int = 5
     los: bool = True
     specular_reflection: bool = True
@@ -89,10 +94,6 @@ class RadioMapConfig:
     diffraction: bool = False
     edge_diffraction: bool = False
     diffraction_lit_region: bool = True
-    # seed: int = 42
-    # rr_depth: int = -1
-    # rr_prob: float = 0.95
-    # stop_threshold: float | None = None
 
     # -- Display
     color_map: str = "viridis"
@@ -124,6 +125,10 @@ class PathsConfig:
     max_depth: int = 5
     max_num_paths_per_src: int = 1000000
     samples_per_src: int = 1000000
+    # Samples used while something is moving; the full count is used once it
+    # settles. Fewer samples find the same dominant paths.
+    interactive_samples_per_src: int = 10000
+    seed: int = 12345
     synthetic_array: bool = True
     los: bool = True
     specular_reflection: bool = True

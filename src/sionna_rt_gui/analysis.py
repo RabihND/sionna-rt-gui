@@ -109,10 +109,14 @@ def link_budget(gui: "SionnaRtGui", rx_index: int = 0, tx_index: int = 0) -> dic
         else 0.0
     )
 
+    received_dbm = power_dbm + total_gain_db
+    noise_dbm = 10.0 * np.log10(float(gui.scene.thermal_noise_power[0])) + 30.0
     result = {
         "paths": int(amplitude.size),
         "path_gain_db": total_gain_db,
-        "received_dbm": power_dbm + total_gain_db,
+        "received_dbm": received_dbm,
+        "noise_dbm": noise_dbm,
+        "snr_db": received_dbm - noise_dbm,
         "tx_power_dbm": power_dbm,
         "strongest_db": strongest_db,
         "mean_delay_ns": mean_delay * 1e9,
@@ -140,6 +144,47 @@ def refresh_statistics(gui: "SionnaRtGui", force: bool = False) -> None:
     gui._statistics_time = now
     gui.radio_map_stats = radio_map_statistics(gui)
     gui.link_budget_stats = link_budget(gui, *reversed(gui.cir_pair))
+
+
+def noise_contents(gui: "SionnaRtGui") -> None:
+    """
+    The thermal noise floor, which is what turns received power into SNR and
+    what the radio map's SINR is measured against. Sionna derives it from the
+    scene's bandwidth and temperature as k * T * B.
+    """
+    bandwidth_mhz = float(gui.scene.bandwidth[0]) / 1e6
+    property_row("Bandwidth [MHz]", gui.ui_scale)
+    changed_bandwidth, new_bandwidth = psim.DragFloat(
+        "##noise_bandwidth", bandwidth_mhz, 0.5, 0.1, 2000.0, format="%.1f"
+    )
+    end_property_row()
+
+    temperature = float(gui.scene.temperature[0])
+    property_row("Temperature [K]", gui.ui_scale)
+    changed_temperature, new_temperature = psim.DragFloat(
+        "##noise_temperature", temperature, 1.0, 1.0, 3000.0, format="%.0f"
+    )
+    end_property_row()
+
+    if changed_bandwidth:
+        gui.scene.bandwidth = new_bandwidth * 1e6
+    if changed_temperature:
+        gui.scene.temperature = new_temperature
+    if changed_bandwidth or changed_temperature:
+        # A radio map keeps the noise floor it was built with, so its SINR only
+        # follows once it is recomputed.
+        gui.reset_radio_map()
+        refresh_statistics(gui, force=True)
+
+    noise_dbm = 10.0 * np.log10(float(gui.scene.thermal_noise_power[0])) + 30.0
+    psim.Spacing()
+    psim.TextColored((*ACCENT_BRIGHT, 1.0), f"Noise floor {noise_dbm:.1f} dBm")
+    psim.PushTextWrapPos(0.0)
+    psim.TextDisabled(
+        "Thermal noise from k * T * B. Received power above this is the SNR, "
+        "and the radio map's SINR is measured against it."
+    )
+    psim.PopTextWrapPos()
 
 
 def coverage_contents(gui: "SionnaRtGui") -> None:
@@ -230,7 +275,11 @@ def link_budget_contents(gui: "SionnaRtGui") -> None:
     psim.PushTextWrapPos(0.0)
     psim.TextDisabled(pair)
     psim.TextColored(
-        (*ACCENT_BRIGHT, 1.0), f"Received {stats['received_dbm']:.1f} dBm"
+        (*ACCENT_BRIGHT, 1.0),
+        f"Received {stats['received_dbm']:.1f} dBm, SNR {stats['snr_db']:.1f} dB",
+    )
+    psim.TextDisabled(
+        f"Thermal noise floor {stats['noise_dbm']:.1f} dBm"
     )
     psim.Text(
         f"Path gain {stats['path_gain_db']:.1f} dB "

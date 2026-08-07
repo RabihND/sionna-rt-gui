@@ -20,6 +20,7 @@ from . import __version__ as GUI_VERSION
 from .analysis import (
     coverage_contents,
     link_budget_contents,
+    noise_contents,
     refresh_statistics,
 )
 from .animation import (
@@ -283,8 +284,7 @@ class SionnaRtGui:
         self._baseline_frame_s: float | None = None
         self.solver_update_delay_s: float = 0.0
         self.solver_delay_max_s: float = 0.12
-        # Samples per source while something is moving, and the settle pass
-        self.interactive_samples_per_src: int = 10_000
+        # State of the settle pass that follows interactive tracing
         self._last_interactive_paths: float = 0.0
         self._settle_paths_pending: bool = False
         self.frame_time_target_s: float = 1.0 / 30.0
@@ -867,6 +867,13 @@ class SionnaRtGui:
             measurement_surface=self.cfg.radio_map.measurement_surface,
             # precoding_vec=self.cfg.radio_map.precoding_vec,
             samples_per_tx=samples_per_tx,
+            rr_depth=self.cfg.radio_map.rr_depth,
+            rr_prob=self.cfg.radio_map.rr_prob,
+            stop_threshold=(
+                10.0 ** (self.cfg.radio_map.stop_threshold_db / 10.0)
+                if self.cfg.radio_map.stop_threshold_db is not None
+                else None
+            ),
             max_depth=self.cfg.radio_map.max_depth,
             los=self.cfg.radio_map.los,
             specular_reflection=self.cfg.radio_map.specular_reflection,
@@ -1009,7 +1016,7 @@ class SionnaRtGui:
         samples_per_src = self.cfg.paths.samples_per_src
         if interactive:
             samples_per_src = max(
-                min(self.interactive_samples_per_src, samples_per_src), 1000
+                min(self.cfg.paths.interactive_samples_per_src, samples_per_src), 1000
             )
 
         solver = rt.PathSolver()
@@ -1026,7 +1033,7 @@ class SionnaRtGui:
             diffraction=self.cfg.paths.diffraction,
             edge_diffraction=self.cfg.paths.edge_diffraction,
             diffraction_lit_region=self.cfg.paths.diffraction_lit_region,
-            seed=12345,
+            seed=self.cfg.paths.seed,
         )
 
     # ------------------------
@@ -2527,6 +2534,51 @@ class SionnaRtGui:
                 )
             needs_update |= changed
 
+            if psim.TreeNodeEx("Solver##rm_solver"):
+                use_threshold = self.cfg.radio_map.stop_threshold_db is not None
+                changed, use_threshold = psim.Checkbox(
+                    "Stop weak rays##rm_stop", use_threshold
+                )
+                if changed:
+                    self.cfg.radio_map.stop_threshold_db = -60.0 if use_threshold else None
+                    needs_update = True
+                if psim.IsItemHovered():
+                    psim.SetTooltip(
+                        "Abandon a ray once its contribution has fallen this far.\n"
+                        "Cheaper, at the cost of the very weakest contributions."
+                    )
+                if self.cfg.radio_map.stop_threshold_db is not None:
+                    property_row("Stop below [dB]", self.ui_scale)
+                    changed, self.cfg.radio_map.stop_threshold_db = psim.SliderFloat(
+                        "##rm_stop_db",
+                        self.cfg.radio_map.stop_threshold_db,
+                        -120.0,
+                        -10.0,
+                        format="%.0f",
+                    )
+                    end_property_row()
+                    needs_update |= changed
+
+                property_row("Roulette from depth", self.ui_scale)
+                changed, self.cfg.radio_map.rr_depth = psim.SliderInt(
+                    "##rm_rr_depth", self.cfg.radio_map.rr_depth, -1, 10
+                )
+                end_property_row()
+                needs_update |= changed
+                if psim.IsItemHovered():
+                    psim.SetTooltip(
+                        "Beyond this depth, rays are terminated at random to keep\n"
+                        "the estimate unbiased for less work. -1 disables it."
+                    )
+
+                property_row("Survival probability", self.ui_scale)
+                changed, self.cfg.radio_map.rr_prob = psim.SliderFloat(
+                    "##rm_rr_prob", self.cfg.radio_map.rr_prob, 0.1, 0.99, format="%.2f"
+                )
+                end_property_row()
+                needs_update |= changed
+                psim.TreePop()
+
             property_row("Frame time target [ms]", self.ui_scale)
             changed, target_ms = psim.SliderFloat(
                 "##rm_frame_budget",
@@ -2696,6 +2748,64 @@ class SionnaRtGui:
                     "How stale the paths may get while devices move.\n"
                     "Lower follows movement more closely and costs frames."
                 )
+
+            if psim.TreeNodeEx("Solver##paths_solver"):
+                property_row("Samples per source", self.ui_scale)
+                changed, log_samples = psim.SliderFloat(
+                    "##paths_samples",
+                    float(np.log10(max(self.cfg.paths.samples_per_src, 1))),
+                    3.0,
+                    7.0,
+                    format="10^%.1f",
+                )
+                end_property_row()
+                if changed:
+                    self.cfg.paths.samples_per_src = int(10.0**log_samples)
+                if psim.IsItemHovered():
+                    psim.SetTooltip(
+                        "Rays shot per source. More samples find more weak\n"
+                        "diffuse paths; the dominant ones are found either way."
+                    )
+
+                property_row("While moving", self.ui_scale)
+                changed, log_interactive = psim.SliderFloat(
+                    "##paths_interactive_samples",
+                    float(np.log10(max(self.cfg.paths.interactive_samples_per_src, 1))),
+                    3.0,
+                    7.0,
+                    format="10^%.1f",
+                )
+                end_property_row()
+                if changed:
+                    self.cfg.paths.interactive_samples_per_src = int(
+                        10.0**log_interactive
+                    )
+                if psim.IsItemHovered():
+                    psim.SetTooltip(
+                        "Samples used while devices move. A full-quality trace\n"
+                        "follows once movement stops."
+                    )
+
+                property_row("Max paths per source", self.ui_scale)
+                changed, log_paths = psim.SliderFloat(
+                    "##paths_max_paths",
+                    float(np.log10(max(self.cfg.paths.max_num_paths_per_src, 1))),
+                    3.0,
+                    7.0,
+                    format="10^%.1f",
+                )
+                end_property_row()
+                if changed:
+                    self.cfg.paths.max_num_paths_per_src = int(10.0**log_paths)
+
+                property_row("Seed", self.ui_scale)
+                changed, self.cfg.paths.seed = psim.InputInt(
+                    "##paths_seed", self.cfg.paths.seed
+                )
+                end_property_row()
+                if psim.IsItemHovered():
+                    psim.SetTooltip("Fixed, so repeated traces are reproducible.")
+                psim.TreePop()
 
             property_row("Max depth", self.ui_scale)
             changed, self.cfg.paths.max_depth = psim.SliderInt(
@@ -3242,6 +3352,8 @@ class SionnaRtGui:
                         "Coverage", psim.ImGuiTreeNodeFlags_DefaultOpen
                     ):
                         coverage_contents(self)
+                    if psim.CollapsingHeader("Noise"):
+                        noise_contents(self)
                 case "Assets":
                     self.section_assets()
                 case "Scene":
