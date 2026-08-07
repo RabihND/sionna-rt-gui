@@ -108,6 +108,7 @@ def link_metrics(
 
     candidates = (mcs_index,) if mcs_index is not None else MCS_INDICES
     results = []
+    unavailable = []
     for index in candidates:
         try:
             decoded_bits, _, sinr_eff, tbler, bler = abstraction(
@@ -117,6 +118,13 @@ def link_metrics(
             )
         except Exception as e:
             logging.debug("MCS %s could not be evaluated: %s", index, e)
+            unavailable.append(int(index))
+            continue
+        block_error_rate = float(np.ravel(tbler.numpy())[0])
+        # The shipped tables do not cover every scheme of every table index;
+        # those come back without a finite error rate and are not results.
+        if not np.isfinite(block_error_rate):
+            unavailable.append(int(index))
             continue
         results.append(
             {
@@ -124,7 +132,7 @@ def link_metrics(
                 "sinr_eff_db": float(
                     10.0 * np.log10(max(float(np.ravel(sinr_eff.numpy())[0]), 1e-12))
                 ),
-                "bler": float(np.ravel(tbler.numpy())[0]),
+                "bler": block_error_rate,
                 "bits_per_block": int(np.ravel(decoded_bits.numpy())[0]),
             }
         )
@@ -142,6 +150,7 @@ def link_metrics(
     return {
         "chosen": chosen,
         "all": results,
+        "unavailable": sorted(set(unavailable)),
         "meets_target": bool(within_target),
         "bler_target": bler_target,
         "num_ofdm_symbols": num_ofdm_symbols,
