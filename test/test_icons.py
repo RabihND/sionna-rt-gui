@@ -71,6 +71,7 @@ ICON_FUNCTIONS = [
     icons.render_icon,
     icons.timeline_icon,
     icons.impulse_icon,
+    icons.link_icon,
 ]
 
 

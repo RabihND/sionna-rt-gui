@@ -19,6 +19,7 @@ from sionna.rt.scene_utils import remove_objects_duplicate_vertices
 from . import __version__ as GUI_VERSION
 from .analysis import (
     coverage_contents,
+    phy_link_contents,
     link_budget_contents,
     link_simulation_contents,
     noise_contents,
@@ -96,11 +97,12 @@ from .workspace_layout import (
 )
 
 # Editors available in the bottom area
-BOTTOM_TABS = ["Timeline", "Impulse response", "Antenna pattern"]
+BOTTOM_TABS = ["Timeline", "Impulse response", "Antenna pattern", "Link"]
 BOTTOM_TAB_ICONS = {
     "Timeline": icons.timeline_icon,
     "Impulse response": icons.impulse_icon,
     "Antenna pattern": icons.antenna,
+    "Link": icons.link_icon,
 }
 
 # Tabs of the properties area, in display order
@@ -296,6 +298,10 @@ class SionnaRtGui:
         self.radio_map_stats: dict | None = None
         self.link_budget_stats: dict | None = None
         self.link_simulation_stats: dict | None = None
+        # Link metrics from sionna's system-level layer, measured on demand
+        self.phy_metrics_stats: dict | None = None
+        self.phy_bler_target: float = 0.1
+        self.phy_auto_measure: bool = True
         self.coverage_threshold_dbm: float = -95.0
         # Solver work per frame, steered by the measured frame time
         self._rm_refine_samples: int = 0
@@ -3495,6 +3501,10 @@ class SionnaRtGui:
             match BOTTOM_TABS[self.bottom_tab]:
                 case "Impulse response":
                     cir_contents(self)
+                    end_area()
+                    return
+                case "Link":
+                    phy_link_contents(self)
                     end_area()
                     return
                 case "Antenna pattern":

@@ -17,7 +17,7 @@ import drjit as dr
 import numpy as np
 import polyscope.imgui as psim
 
-from .ps_utils import ACCENT_BRIGHT
+from .ps_utils import ACCENT_BRIGHT, im_col32
 from .workspace_layout import end_property_row, numeric_field, property_row
 
 # Seconds between automatic refreshes of the cached statistics
@@ -188,6 +188,8 @@ def link_simulation(gui: "SionnaRtGui", rx_index: int = 0, tx_index: int = 0) ->
 
     capacity_bps = float(np.sum(np.log2(1.0 + snr)) * spacing)
     return {
+        "snr_linear": snr,
+        "response_db": 20.0 * np.log10(np.maximum(np.abs(response), 1e-12)),
         "paths": int(coefficients.size),
         "subcarriers": n_subcarriers,
         "bandwidth_mhz": bandwidth / 1e6,
@@ -439,3 +441,136 @@ def link_simulation_contents(gui: "SionnaRtGui") -> None:
             "installed here, so the figures above stop at the channel itself."
         )
     psim.PopTextWrapPos()
+
+
+def phy_link_contents(gui: "SionnaRtGui") -> None:
+    """
+    Link metrics from sionna's system-level layer, with the per-subcarrier
+    signal-to-noise ratio drawn across the band.
+    """
+    from . import phy_metrics
+
+    scale = gui.ui_scale
+    if not gui.cfg.paths.compute_cir:
+        psim.TextDisabled("Enable the channel impulse response to measure a link.")
+        if psim.Button("Enable##phy_link"):
+            gui.cfg.paths.compute_cir = True
+            gui.update_paths(show=True)
+        return
+
+    refresh_statistics(gui)
+    channel = gui.link_simulation_stats
+    if channel is None or channel.get("paths", 0) == 0:
+        psim.TextDisabled("No paths between the selected pair yet.")
+        return
+
+    if not phy_metrics.available():
+        psim.PushTextWrapPos(0.0)
+        psim.TextDisabled(
+            "Block error rates, throughput and modulation choice come from "
+            "sionna's system-level layer, which arrives with the full sionna "
+            "package. Only sionna-rt is installed, so the channel figures in "
+            "the Analysis tab are all that can be shown."
+        )
+        psim.PopTextWrapPos()
+        return
+
+    # --- Controls and the measurement itself
+    psim.AlignTextToFramePadding()
+    psim.Text("Target block error rate")
+    psim.SameLine()
+    psim.PushItemWidth(120 * scale)
+    _, gui.phy_bler_target = psim.SliderFloat(
+        "##phy_bler_target", gui.phy_bler_target, 0.01, 0.5, format="%.2f"
+    )
+    psim.PopItemWidth()
+    psim.SameLine()
+    if psim.Button("Measure##phy_link") or (
+        gui.phy_metrics_stats is None and gui.phy_auto_measure
+    ):
+        gui.phy_auto_measure = False
+        gui.phy_metrics_stats = phy_metrics.link_metrics(
+            channel["snr_linear"], bler_target=gui.phy_bler_target
+        )
+    psim.SameLine()
+    psim.TextDisabled("evaluated over sionna's 3GPP tables")
+
+    stats = gui.phy_metrics_stats
+    available_width = psim.GetContentRegionAvail()[0]
+
+    if stats is not None:
+        chosen = stats["chosen"]
+        # Roughly one slot of the configured numerology
+        slot_seconds = stats["num_ofdm_symbols"] / max(
+            float(gui.cfg.paths.subcarrier_spacing), 1.0
+        )
+        throughput_mbps = chosen["bits_per_block"] / slot_seconds / 1e6
+        psim.Spacing()
+        psim.TextColored(
+            (*ACCENT_BRIGHT, 1.0),
+            f"MCS {chosen['mcs_index']} at {chosen['bler']:.1%} block error rate, "
+            f"{throughput_mbps:.1f} Mbit/s",
+        )
+        psim.Text(
+            f"Effective SINR {chosen['sinr_eff_db']:.1f} dB over "
+            f"{stats['num_subcarriers']} subcarriers, "
+            f"{chosen['bits_per_block']} bits per block"
+        )
+        if not stats["meets_target"]:
+            psim.TextColored(
+                (0.92, 0.55, 0.30, 1.0),
+                "No scheme meets the target: the link would not close",
+            )
+        psim.TextDisabled(
+            f"Shannon capacity of the same channel: "
+            f"{channel['capacity_mbps']:.1f} Mbit/s"
+        )
+    else:
+        psim.Spacing()
+        psim.TextDisabled("Press Measure to evaluate the link.")
+
+    # --- The band, drawn: signal-to-noise ratio per subcarrier
+    snr_db = 10.0 * np.log10(np.maximum(channel["snr_linear"], 1e-12))
+    draw_list = psim.GetWindowDrawList()
+    origin = psim.GetCursorScreenPos()
+    plot_height = max(psim.GetContentRegionAvail()[1] - 12 * scale, 60 * scale)
+    plot_width = max(available_width - 50 * scale, 80 * scale)
+    x0 = origin[0] + 42 * scale
+    y0 = origin[1]
+
+    top = float(np.ceil(max(np.max(snr_db), 5.0) / 5.0) * 5.0)
+    bottom = float(np.floor(min(np.min(snr_db), top - 20.0) / 5.0) * 5.0)
+    grid = im_col32(0.55, 0.57, 0.58, 0.22)
+    text = im_col32(0.62, 0.64, 0.65, 0.9)
+
+    for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
+        y = y0 + fraction * plot_height
+        draw_list.AddLine((x0, y), (x0 + plot_width, y), grid, 1.0)
+        draw_list.AddText(
+            (origin[0], y - 7 * scale),
+            text,
+            f"{top - fraction * (top - bottom):.0f}",
+        )
+    if stats is not None:
+        # Where the chosen scheme's effective SINR sits
+        effective = stats["chosen"]["sinr_eff_db"]
+        if bottom <= effective <= top:
+            y = y0 + (top - effective) / (top - bottom) * plot_height
+            draw_list.AddLine(
+                (x0, y), (x0 + plot_width, y), im_col32(*ACCENT_BRIGHT, 0.7), 1.4 * scale
+            )
+
+    points = np.stack(
+        [
+            x0 + np.linspace(0.0, plot_width, snr_db.size),
+            y0 + np.clip((top - snr_db) / (top - bottom), 0.0, 1.0) * plot_height,
+        ],
+        axis=1,
+    ).astype(np.float32)
+    draw_list.AddPolyline(np.asfortranarray(points), im_col32(0.45, 0.72, 0.95), 0, 1.8 * scale)
+    draw_list.AddText(
+        (x0 + plot_width - 150 * scale, y0 + plot_height + 2 * scale),
+        text,
+        "signal-to-noise ratio [dB] across the band",
+    )
+    psim.Dummy((available_width, plot_height + 16 * scale))

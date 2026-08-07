@@ -461,3 +461,22 @@ def icon_button(
         scale,
     )
     return pressed
+
+
+def link_icon(draw_list, x, y, size, color, scale=1.0):
+    """A rising curve with a threshold line, as on a link quality plot."""
+    base = y + size * 0.80
+    left, right = x + size * 0.16, x + size * 0.86
+    draw_list.AddLine((left, base), (right, base), color, 1.4 * scale)
+    draw_list.AddLine((left, base), (left, y + size * 0.20), color, 1.4 * scale)
+    curve = [
+        (left + (right - left) * t, base - size * 0.52 * t**0.55)
+        for t in np.linspace(0.0, 1.0, 16)
+    ]
+    _polyline(draw_list, curve, color, 1.7 * scale)
+    draw_list.AddLine(
+        (left, base - size * 0.30),
+        (right, base - size * 0.30),
+        (color & 0x00FFFFFF) | (120 << 24),
+        1.2 * scale,
+    )
