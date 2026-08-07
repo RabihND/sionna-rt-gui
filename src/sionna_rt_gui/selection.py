@@ -42,6 +42,7 @@ def selection_gui(
     selected_object: rt.SceneObject | None,
     selected_type: SelectionType | None,
 ):
+    """Selection properties in their own floating window (classic layout)."""
     if selected_object is None:
         return
 
@@ -68,6 +69,23 @@ def selection_gui(
     if not keep_selection:
         psim.End()
         gui.clear_selection()
+        return
+
+    selection_contents(gui, selected_object, selected_type)
+    psim.End()
+
+
+def selection_contents(
+    gui: "SionnaRtGui",
+    selected_object: rt.SceneObject | None,
+    selected_type: SelectionType | None,
+):
+    """
+    Properties of the selected object, drawn into the current window so they
+    can be shown either floating or inside a docked area.
+    """
+    if selected_object is None:
+        psim.TextDisabled("No active object.\nClick a radio device in the 3D view.")
         return
 
     rd_update_needed = False
@@ -335,5 +353,3 @@ def selection_gui(
 
         if gui.cfg.paths.auto_update:
             gui.update_paths(clear_first=True, show=True)
-
-    psim.End()

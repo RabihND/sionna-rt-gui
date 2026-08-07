@@ -17,7 +17,13 @@ from sionna import rt
 from sionna.rt.scene_utils import remove_objects_duplicate_vertices
 
 from . import __version__ as GUI_VERSION
-from .animation import AnimationConfig, animation_gui, animation_tick
+from .animation import (
+    AnimationConfig,
+    animation_gui,
+    animation_tick,
+    apply_trajectory_position,
+    propagate_device_updates,
+)
 from .antenna_array import antenna_array_gui
 from .assets import (
     ASSET_LIBRARY,
@@ -63,7 +69,20 @@ from .sionna_utils import (
 )
 from .cir_viz import cir_window
 from .pattern_viz import pattern_cuts_window, remove_antenna_pattern_structure
-from .selection import SelectionType, selection_gui
+from .selection import SelectionType, selection_contents, selection_gui
+from .workspace_layout import (
+    AreaLayout,
+    HEADER_BG,
+    area_header,
+    begin_area,
+    end_area,
+    set_editor_imgui_style,
+    splitter,
+    tab_strip,
+)
+
+# Tabs of the properties area, in display order
+PROPERTIES_TABS = ["Object", "Devices", "Radio map", "Paths", "Scene", "Render"]
 
 CTRL_OR_CMD = "Cmd" if sys.platform == "darwin" else "Ctrl"
 # Bounding-box outline drawn while picking an object to attach a device to
@@ -202,6 +221,10 @@ class SionnaRtGui:
         self._attach_previous_rendering_mode: RenderingMode | None = None
         # Names of assets placed from the library (see assets.py)
         self.placed_assets: list[str] = []
+        # Sizes of the docked areas (see workspace_layout.py)
+        self.layout: AreaLayout = AreaLayout()
+        # Index of the visible properties tab
+        self.properties_tab: int = 0
 
         # --- Polyscope setup
         # Can be used to derive e.g. random seeds.
@@ -228,7 +251,10 @@ class SionnaRtGui:
         ps.set_give_focus_on_show(True)
         ps.set_transparency_mode("pretty")
         ps.set_files_dropped_callback(self.on_files_dropped)
-        set_custom_imgui_style()
+        if self.cfg.use_docked_layout:
+            set_editor_imgui_style()
+        else:
+            set_custom_imgui_style()
 
         was_initialized = ps.is_initialized()
         if not was_initialized:
@@ -1826,80 +1852,7 @@ class SionnaRtGui:
 
         psim.Dummy((0, 2 * self.ui_scale))
 
-    def gui(self):
-        # TODO: change GUI accent color to a non-default color.
-
-        # Highlight the object under the cursor while picking one
-        self.update_attach_highlight()
-
-        if self.cfg.gui_mode == GuiMode.HIDDEN:
-            return
-
-        # --- Selection window
-        if self.selected_object is not None:
-            selection_gui(self, self.selected_object, self.selected_type)
-
-        # --- Antenna pattern cuts (needs a selected radio device)
-        if self.selected_object is not None and self.selected_type in (
-            SelectionType.Transmitter,
-            SelectionType.Receiver,
-        ):
-            array = (
-                self.scene.tx_array
-                if self.selected_type == SelectionType.Transmitter
-                else self.scene.rx_array
-            )
-            pattern_cuts_window(self, array)
-
-        # --- Channel impulse response
-        cir_window(self)
-
-        # --- Help window
-        if self.cfg.show_help_window:
-            self.gui_help_window()
-
-        # --- Colorbar window
-        if (
-            self.has_visible_radio_map()[0]
-            and self.cfg.radio_map.show_colorbar
-            and (self.rm_colorbar is not None)
-            and (self.rm_colorbar_texture_id is not None)
-            and hasattr(psim, "Image")
-        ):
-            window_resolution = ps.get_window_size()
-            h, w = self.rm_colorbar.shape[:2]
-            psim.SetNextWindowSize((w * self.ui_scale, h * self.ui_scale))
-            psim.SetNextWindowPos(
-                (0.5 * (window_resolution[0] - w * self.ui_scale), 5 * self.ui_scale)
-            )
-            psim.Begin(
-                "Colorbar",
-                open=True,
-                flags=(
-                    psim.ImGuiWindowFlags_NoTitleBar
-                    | psim.ImGuiWindowFlags_NoDecoration
-                    | psim.ImGuiWindowFlags_NoBackground
-                ),
-            )
-            psim.SetCursorPosX(0)
-            psim.SetCursorPosY(0)
-            psim.Image(
-                psim.ImTextureRef(self.rm_colorbar_texture_id),
-                (self.rm_colorbar.shape[1], self.rm_colorbar.shape[0]),
-            )
-            psim.End()
-
-        # --- Main GUI window
-        psim.SetNextWindowSize(
-            (430 * self.ui_scale, 800 * self.ui_scale), psim.ImGuiCond_FirstUseEver
-        )
-        psim.SetNextWindowPos(
-            (10 * self.ui_scale, 10 * self.ui_scale), psim.ImGuiCond_FirstUseEver
-        )
-        psim.Begin("Sionna RT##sionna", open=True)
-
-        self.header_gui()
-
+    def section_scene(self) -> None:
         if psim.CollapsingHeader("Scene", psim.ImGuiTreeNodeFlags_DefaultOpen):
             psim.Spacing()
 
@@ -1944,11 +1897,13 @@ class SionnaRtGui:
             self.frequency_gui()
             psim.Spacing()
 
+    def section_assets(self) -> None:
         if psim.CollapsingHeader("Assets"):
             psim.Spacing()
             self.assets_gui()
             psim.Spacing()
 
+    def section_devices(self) -> None:
         n_tx = len(self.scene._transmitters)
         n_rx = len(self.scene._receivers)
         if psim.CollapsingHeader(
@@ -1989,6 +1944,7 @@ class SionnaRtGui:
 
             psim.Spacing()
 
+    def section_radio_map(self) -> None:
         if psim.CollapsingHeader("Radio map", psim.ImGuiTreeNodeFlags_DefaultOpen):
             psim.Spacing()
             needs_update = False
@@ -2150,6 +2106,7 @@ class SionnaRtGui:
 
             psim.Spacing()
 
+    def section_paths(self) -> None:
         if psim.CollapsingHeader("Paths", psim.ImGuiTreeNodeFlags_DefaultOpen):
             psim.Spacing()
             needs_update = False
@@ -2208,10 +2165,12 @@ class SionnaRtGui:
 
             psim.Spacing()
 
+    def section_animation(self) -> None:
         if psim.CollapsingHeader("Animation"):
             animation_gui(self)
             psim.Spacing()
 
+    def section_rendering(self) -> None:
         if psim.CollapsingHeader("Rendering"):
             psim.Spacing()
 
@@ -2329,6 +2288,406 @@ class SionnaRtGui:
                     if changed:
                         self.slice_plane.set_draw_widget(gizmo_active)
 
+    # ------------------------
+    # Docked workspace layout
+
+    def workspace_gui(self) -> None:
+        """
+        Fixed, non-overlapping areas: a top bar, a tool column, the outliner
+        and properties on the side, a timeline, and a status bar. The 3D view
+        is whatever these do not cover.
+        """
+        scale = self.ui_scale
+        areas = self.layout.areas(ps.get_window_size(), scale)
+
+        self._workspace_topbar(areas["topbar"], scale)
+        self._workspace_tools(areas["tools"], scale)
+        self._workspace_outliner(areas["outliner"], scale)
+        self._workspace_properties(areas["properties"], scale)
+        self._workspace_timeline(areas["timeline"], scale)
+        self._workspace_status(areas["status"], scale)
+
+        # Draggable borders between the areas
+        tools = areas["tools"]
+        self.layout.tools_width += splitter(
+            "tools", (tools[0] + tools[2], tools[1], tools[2], tools[3]), True, scale
+        )
+        side = areas["outliner"]
+        self.layout.side_width -= splitter(
+            "side", (side[0], side[1], side[2], side[3] + areas["properties"][3]), True, scale
+        )
+        self.layout.outliner_fraction += splitter(
+            "outliner", (side[0], side[1] + side[3], side[2], side[3]), False, scale
+        ) * scale / max(areas["properties"][3] + side[3], 1.0)
+        timeline = areas["timeline"]
+        self.layout.timeline_height -= splitter(
+            "timeline", (timeline[0], timeline[1], timeline[2], timeline[3]), False, scale
+        )
+
+    def _workspace_topbar(self, rect, scale: float) -> None:
+        psim.PushStyleVar(psim.ImGuiStyleVar_WindowPadding, (8 * scale, 3 * scale))
+        if begin_area("##topbar", rect, background=HEADER_BG):
+            psim.AlignTextToFramePadding()
+            psim.TextColored((*ACCENT_BRIGHT, 1.0), "SIONNA RT")
+            psim.SameLine()
+            psim.TextDisabled("|")
+            psim.SameLine()
+
+            psim.PushItemWidth(190 * scale)
+            changed, combo_i = psim.Combo(
+                "##topbar_scene", self.current_scene_idx, self.known_scene_names
+            )
+            psim.PopItemWidth()
+            if changed:
+                self.load_scene_requested = self.known_scene_paths[combo_i]
+
+            psim.SameLine()
+            psim.PushItemWidth(150 * scale)
+            changed, mode_i = psim.Combo(
+                "##topbar_mode",
+                self.cfg.rendering.mode.value,
+                RENDERING_MODE_NAMES,
+            )
+            psim.PopItemWidth()
+            if changed:
+                self.set_rendering_mode(RenderingMode(mode_i))
+
+            psim.SameLine()
+            if psim.Button("Top##topbar"):
+                self.move_camera_top()
+            psim.SameLine()
+            if psim.Button("Fit##topbar"):
+                self.fit_camera_to_scene()
+            psim.SameLine()
+            if psim.Button("Home##topbar"):
+                self.move_camera_home()
+
+            # Right-aligned actions
+            psim.SameLine()
+            buttons_width = 150 * scale
+            psim.SetCursorPosX(
+                max(
+                    psim.GetCursorPosX(),
+                    psim.GetCursorPosX() + psim.GetContentRegionAvail()[0] - buttons_width,
+                )
+            )
+            if psim.Button("Save view##topbar"):
+                self.save_screenshot()
+            psim.SameLine()
+            if psim.Button("Layout##topbar"):
+                self.cfg.use_docked_layout = False
+            if psim.IsItemHovered():
+                psim.SetTooltip("Switch back to the floating window layout")
+            psim.SameLine()
+            if psim.Button("?##topbar"):
+                self.cfg.show_help_window = not self.cfg.show_help_window
+        end_area()
+        psim.PopStyleVar()
+
+    def _workspace_tools(self, rect, scale: float) -> None:
+        if rect[2] < 8 * scale:
+            return
+        if begin_area("##tools", rect):
+            area_header("Add", scale)
+            full = (psim.GetContentRegionAvail()[0], 0.0)
+            if psim.Button("Transmitter##tools", full):
+                self.add_radio_device(
+                    self.default_new_device_position(True), is_transmitter=True
+                )
+            if psim.Button("Receiver##tools", full):
+                self.add_radio_device(
+                    self.default_new_device_position(False), is_transmitter=False
+                )
+            psim.Dummy((0.0, 4 * scale))
+            for spec in ASSET_LIBRARY:
+                if psim.Button(f"{spec.label}##tools_{spec.key}", full):
+                    self.add_asset(spec)
+                if psim.IsItemHovered():
+                    psim.SetTooltip(spec.note)
+
+            psim.Dummy((0.0, 6 * scale))
+            area_header("Compute", scale)
+            if psim.Button("Radio map##tools", full):
+                self.set_radio_map(self.compute_radio_map(), show=True)
+            if psim.Button("Paths##tools", full):
+                self.update_paths(clear_first=True, show=True)
+        end_area()
+
+    @staticmethod
+    def _find_structure(name: str):
+        """Look up a Polyscope structure by name, whatever its type."""
+        for has, get in (
+            (ps.has_surface_mesh, ps.get_surface_mesh),
+            (ps.has_point_cloud, ps.get_point_cloud),
+            (ps.has_curve_network, ps.get_curve_network),
+        ):
+            if has(name):
+                return get(name)
+        return None
+
+    def _workspace_outliner(self, rect, scale: float) -> None:
+        """
+        Scene tree: radio devices (clickable to select), placed assets and the
+        Polyscope structure groups with their visibility toggles.
+        """
+        if begin_area("##outliner", rect):
+            area_header("Outliner", scale)
+
+            for is_transmitter, devices in (
+                (True, self.scene._transmitters),
+                (False, self.scene._receivers),
+            ):
+                for name, rd in devices.items():
+                    psim.PushID(f"outliner_{name}")
+                    swatch = psim.GetFontSize() * 0.85
+                    psim.ColorButton(
+                        "##c",
+                        (*rd.color, 1.0),
+                        psim.ImGuiColorEditFlags_NoTooltip,
+                        (swatch, swatch),
+                    )
+                    psim.SameLine()
+                    if psim.Selectable(name, self.selected_object is rd):
+                        self.selected_object = rd
+                        self.selected_type = (
+                            SelectionType.Transmitter
+                            if is_transmitter
+                            else SelectionType.Receiver
+                        )
+                        self.properties_tab = PROPERTIES_TABS.index("Object")
+                    psim.PopID()
+
+            for asset_name in self.placed_assets:
+                psim.PushID(f"outliner_asset_{asset_name}")
+                psim.Selectable(asset_name, False)
+                psim.PopID()
+
+            psim.Dummy((0.0, 4 * scale))
+            psim.Separator()
+            for label, key in (
+                ("Scene meshes", "scene"),
+                ("Radio maps", "radio_maps"),
+                ("Paths", "paths"),
+                ("Radio devices", "rd"),
+            ):
+                group = self.ps_groups.get(key)
+                if group is None:
+                    continue
+                children = list(group.get_child_structure_names())
+                if not psim.TreeNodeEx(f"{label} ({len(children)})##outliner_{key}"):
+                    continue
+                for child in children:
+                    struct = self._find_structure(child)
+                    if struct is None:
+                        psim.TextDisabled(child)
+                        continue
+                    psim.PushID(f"outliner_child_{child}")
+                    changed, enabled = psim.Checkbox("", struct.is_enabled())
+                    if changed:
+                        struct.set_enabled(enabled)
+                    psim.SameLine()
+                    psim.Text(child)
+                    psim.PopID()
+                psim.TreePop()
+
+            psim.Dummy((0.0, 4 * scale))
+            changed, self.cfg.show_polyscope_gui = psim.Checkbox(
+                "Polyscope panels", self.cfg.show_polyscope_gui
+            )
+            if psim.IsItemHovered():
+                psim.SetTooltip(
+                    "Show Polyscope's own windows on top, for the few\n"
+                    "controls not mirrored here (they place themselves)."
+                )
+            if changed:
+                ps.set_build_default_gui_panels(self.cfg.show_polyscope_gui)
+        end_area()
+
+    def _workspace_properties(self, rect, scale: float) -> None:
+        if begin_area("##properties", rect):
+            area_header("Properties", scale)
+            self.properties_tab = tab_strip(
+                PROPERTIES_TABS, self.properties_tab, scale
+            )
+            psim.Dummy((0.0, 2 * scale))
+            match PROPERTIES_TABS[self.properties_tab]:
+                case "Object":
+                    selection_contents(self, self.selected_object, self.selected_type)
+                case "Devices":
+                    self.section_devices()
+                case "Radio map":
+                    self.section_radio_map()
+                case "Paths":
+                    self.section_paths()
+                case "Scene":
+                    self.section_scene()
+                    self.section_assets()
+                case "Render":
+                    self.section_rendering()
+        end_area()
+
+    def _workspace_timeline(self, rect, scale: float) -> None:
+        if rect[3] < 8 * scale:
+            return
+        if begin_area("##timeline", rect):
+            area_header("Timeline", scale)
+            animation_gui(self)
+            # Scrub the selected device's trajectory, when it has one
+            if self.selected_object is not None and self.selected_type in (
+                SelectionType.Transmitter,
+                SelectionType.Receiver,
+            ):
+                trajectory = self.animation_config.trajectories.get(
+                    self.selected_object.name
+                )
+                if trajectory is not None and len(trajectory) > 0:
+                    psim.SameLine()
+                    psim.PushItemWidth(-120 * scale)
+                    changed, distance = psim.SliderFloat(
+                        f"{self.selected_object.name}##timeline_scrub",
+                        trajectory.distance,
+                        0.0,
+                        trajectory.total_distance(),
+                        format="%.1f m",
+                    )
+                    psim.PopItemWidth()
+                    if changed:
+                        trajectory.enabled = False
+                        trajectory.backward = False
+                        trajectory.distance = distance
+                        if apply_trajectory_position(self.selected_object, trajectory):
+                            self.update_attached_object(self.selected_object)
+                            propagate_device_updates(
+                                self,
+                                self.selected_type == SelectionType.Transmitter,
+                                self.selected_type == SelectionType.Receiver,
+                            )
+        end_area()
+
+    def _workspace_status(self, rect, scale: float) -> None:
+        psim.PushStyleVar(psim.ImGuiStyleVar_WindowPadding, (8 * scale, 2 * scale))
+        if begin_area("##status", rect, background=HEADER_BG):
+            io = psim.GetIO()
+            n_meshes, n_triangles = getattr(self, "scene_stats", (0, 0))
+            frequency_ghz = float(self.scene.frequency[0]) / 1e9
+            note = getattr(self, "last_export_note", None)
+            if n_triangles >= 1_000_000:
+                triangles = f"{n_triangles / 1e6:.1f}M"
+            elif n_triangles >= 10_000:
+                triangles = f"{n_triangles / 1e3:.0f}k"
+            else:
+                triangles = str(n_triangles)
+            parts = [
+                f"{io.Framerate:.0f} FPS",
+                f"{len(self.scene._transmitters)} TX, {len(self.scene._receivers)} RX",
+                f"{n_meshes} meshes, {triangles} tris",
+                f"{frequency_ghz:.3g} GHz",
+            ]
+            psim.TextDisabled("   |   ".join(parts))
+            if note is not None and time.time() - note[1] < 8.0:
+                psim.SameLine()
+                psim.TextColored((*ACCENT_BRIGHT, 1.0), f"   {note[0]}")
+        end_area()
+        psim.PopStyleVar()
+
+    def gui(self):
+        # TODO: change GUI accent color to a non-default color.
+
+        # Highlight the object under the cursor while picking one
+        self.update_attach_highlight()
+
+        if self.cfg.gui_mode == GuiMode.HIDDEN:
+            return
+
+        if self.cfg.use_docked_layout:
+            self.workspace_gui()
+            if self.cfg.show_help_window:
+                self.gui_help_window()
+            if self.selected_object is not None and self.selected_type in (
+                SelectionType.Transmitter,
+                SelectionType.Receiver,
+            ):
+                pattern_cuts_window(
+                    self,
+                    self.scene.tx_array
+                    if self.selected_type == SelectionType.Transmitter
+                    else self.scene.rx_array,
+                )
+            cir_window(self)
+            return
+
+        # --- Selection window
+        if self.selected_object is not None:
+            selection_gui(self, self.selected_object, self.selected_type)
+
+        # --- Antenna pattern cuts (needs a selected radio device)
+        if self.selected_object is not None and self.selected_type in (
+            SelectionType.Transmitter,
+            SelectionType.Receiver,
+        ):
+            array = (
+                self.scene.tx_array
+                if self.selected_type == SelectionType.Transmitter
+                else self.scene.rx_array
+            )
+            pattern_cuts_window(self, array)
+
+        # --- Channel impulse response
+        cir_window(self)
+
+        # --- Help window
+        if self.cfg.show_help_window:
+            self.gui_help_window()
+
+        # --- Colorbar window
+        if (
+            self.has_visible_radio_map()[0]
+            and self.cfg.radio_map.show_colorbar
+            and (self.rm_colorbar is not None)
+            and (self.rm_colorbar_texture_id is not None)
+            and hasattr(psim, "Image")
+        ):
+            window_resolution = ps.get_window_size()
+            h, w = self.rm_colorbar.shape[:2]
+            psim.SetNextWindowSize((w * self.ui_scale, h * self.ui_scale))
+            psim.SetNextWindowPos(
+                (0.5 * (window_resolution[0] - w * self.ui_scale), 5 * self.ui_scale)
+            )
+            psim.Begin(
+                "Colorbar",
+                open=True,
+                flags=(
+                    psim.ImGuiWindowFlags_NoTitleBar
+                    | psim.ImGuiWindowFlags_NoDecoration
+                    | psim.ImGuiWindowFlags_NoBackground
+                ),
+            )
+            psim.SetCursorPosX(0)
+            psim.SetCursorPosY(0)
+            psim.Image(
+                psim.ImTextureRef(self.rm_colorbar_texture_id),
+                (self.rm_colorbar.shape[1], self.rm_colorbar.shape[0]),
+            )
+            psim.End()
+
+        # --- Main GUI window
+        psim.SetNextWindowSize(
+            (430 * self.ui_scale, 800 * self.ui_scale), psim.ImGuiCond_FirstUseEver
+        )
+        psim.SetNextWindowPos(
+            (10 * self.ui_scale, 10 * self.ui_scale), psim.ImGuiCond_FirstUseEver
+        )
+        psim.Begin("Sionna RT##sionna", open=True)
+
+        self.header_gui()
+
+        self.section_scene()
+        self.section_assets()
+        self.section_devices()
+        self.section_radio_map()
+        self.section_paths()
+        self.section_animation()
+        self.section_rendering()
         psim.End()  # End main Sionna RT window
 
     def _gui_features_checkboxes(

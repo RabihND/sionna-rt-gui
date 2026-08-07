@@ -232,6 +232,8 @@ class GuiConfig:
     gui_mode: GuiMode = GuiMode.FULL
     show_polyscope_gui: bool = False
     show_help_window: bool = False
+    # Fixed, docked areas instead of floating windows (see workspace_layout.py)
+    use_docked_layout: bool = True
     use_live_reload: bool = False
     use_vsync: bool = True
     background_color: tuple[float, float, float] = (0.0, 0.0, 0.0)
