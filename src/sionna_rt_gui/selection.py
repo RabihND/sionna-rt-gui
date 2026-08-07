@@ -76,6 +76,79 @@ def selection_gui(
     psim.End()
 
 
+def material_contents(gui: "SionnaRtGui", scene_object: rt.SceneObject) -> None:
+    """
+    Radio material of an object: pick any material already in the scene, and
+    edit the electromagnetic properties of the custom ones.
+    """
+    material = scene_object.radio_material
+    names = sorted(gui.scene.radio_materials.keys())
+    current_name = getattr(material, "name", "")
+    current_index = names.index(current_name) if current_name in names else 0
+
+    property_row("Material", gui.ui_scale)
+    changed, new_index = psim.Combo("##material", current_index, names)
+    end_property_row()
+    if psim.IsItemHovered():
+        psim.SetTooltip(
+            "Materials are shared by name across the scene, so editing one\n"
+            "affects every object that uses it."
+        )
+    if changed and names[new_index] != current_name:
+        scene_object.radio_material = gui.scene.radio_materials[names[new_index]]
+        gui.on_scene_materials_changed()
+        return
+
+    if isinstance(material, rt.ITURadioMaterial):
+        psim.TextDisabled(f"ITU-R P.2040 type: {material.itu_type}")
+    else:
+        # A custom material: its properties are ours to edit
+        material_changed = False
+        property_row("Permittivity", gui.ui_scale)
+        changed, value = psim.DragFloat(
+            "##permittivity",
+            float(material.relative_permittivity[0]),
+            0.1,
+            1.0,
+            100.0,
+            format="%.2f",
+        )
+        end_property_row()
+        if changed:
+            material.relative_permittivity = value
+            material_changed = True
+
+        property_row("Conductivity [S/m]", gui.ui_scale)
+        changed, value = psim.DragFloat(
+            "##conductivity",
+            float(material.conductivity[0]),
+            0.01,
+            0.0,
+            100.0,
+            format="%.3f",
+        )
+        end_property_row()
+        if changed:
+            material.conductivity = value
+            material_changed = True
+
+        if material_changed:
+            gui.on_scene_materials_changed()
+
+    property_row("Scattering", gui.ui_scale)
+    changed, value = psim.SliderFloat(
+        "##scattering",
+        float(material.scattering_coefficient[0]),
+        0.0,
+        1.0,
+        format="%.2f",
+    )
+    end_property_row()
+    if changed:
+        material.scattering_coefficient = value
+        gui.on_scene_materials_changed()
+
+
 def scene_object_contents(gui: "SionnaRtGui", scene_object: rt.SceneObject) -> None:
     """
     Properties of a plain scene object (a building, a placed asset, ...):
@@ -99,14 +172,12 @@ def scene_object_contents(gui: "SionnaRtGui", scene_object: rt.SceneObject) -> N
     else:
         psim.TextDisabled("(scene geometry)")
 
-    material = scene_object.radio_material
-    psim.TextDisabled(
-        f"Material: {getattr(material, 'name', type(material).__name__)}"
-    )
     extents = np.array(scene_object.mi_mesh.bbox().extents())
     psim.TextDisabled(
         f"Size: {extents[0]:.2f} x {extents[1]:.2f} x {extents[2]:.2f} m"
     )
+    psim.Spacing()
+    material_contents(gui, scene_object)
 
     psim.Spacing()
     position = scene_object.position.numpy().squeeze()
@@ -115,8 +186,10 @@ def scene_object_contents(gui: "SionnaRtGui", scene_object: rt.SceneObject) -> N
         "##object_position", tuple(position), 0.25, format="%.2f"
     )
     end_property_row()
+    edited_numerically = False
     if changed:
         gui.set_object_position(scene_object, new_position)
+        edited_numerically = True
 
     orientation_deg = np.degrees(scene_object.orientation.numpy().squeeze())
     property_row("Orientation [deg]", gui.ui_scale)
@@ -126,33 +199,44 @@ def scene_object_contents(gui: "SionnaRtGui", scene_object: rt.SceneObject) -> N
     end_property_row()
     if changed:
         gui.set_object_orientation(scene_object, np.radians(new_orientation).tolist())
+        edited_numerically = True
 
     psim.Spacing()
     psim.TextDisabled("Drag the gizmo in the 3D view to move this object.")
 
-    # --- Move gizmo. Deltas are applied as they happen, so the object follows
-    # the gizmo without needing to track an absolute reference pose.
-    if not ps.has_point_cloud("Gizmo"):
-        struct = ps.register_point_cloud(
-            "Gizmo", position[None, :], enabled=False
-        )
+    # --- Move gizmo. The gizmo widget follows the structure's transform, so the
+    # transform (not the point) is what places it on the object. Drags are
+    # applied as deltas, so no absolute reference pose has to be tracked.
+    is_new_gizmo = not ps.has_point_cloud("Gizmo")
+    if is_new_gizmo:
+        struct = ps.register_point_cloud("Gizmo", np.zeros((1, 3)), enabled=False)
         gizmo = struct.get_transformation_gizmo()
         gizmo.set_enabled(True)
         gizmo.set_allow_scaling(False)
         struct.set_ignore_slice_plane(DEFAULT_SLICE_PLANE_NAME, True)
-        gui.object_gizmo_previous = None
     else:
         struct = ps.get_point_cloud("Gizmo")
 
     to_world = struct.get_transform()
     previous = gui.object_gizmo_previous
     if previous is not None and not np.allclose(previous, to_world):
+        # The gizmo was dragged: move the object by the same amount
         translation = to_world[:3, 3] - previous[:3, 3]
         rotation = to_world[:3, :3] @ np.linalg.inv(previous[:3, :3])
         gui.transform_scene_object(
             scene_object, translation=translation, rotation_increment=rotation
         )
-    gui.object_gizmo_previous = to_world
+        gui.object_gizmo_previous = to_world
+        return
+
+    # The gizmo is idle, so keep it on the object. This also catches moves that
+    # did not come from the gizmo: typed coordinates, trajectories, attachments.
+    target = np.eye(4)
+    target[:3, :3] = rotation_matrix(scene_object.orientation).numpy()[..., 0]
+    target[:3, 3] = scene_object.position.numpy().squeeze()
+    if previous is None or not np.allclose(target, to_world):
+        struct.set_transform(target)
+    gui.object_gizmo_previous = target
 
 
 def selection_contents(

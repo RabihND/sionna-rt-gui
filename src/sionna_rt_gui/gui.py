@@ -231,6 +231,10 @@ class SionnaRtGui:
         self._attach_previous_rendering_mode: RenderingMode | None = None
         # Names of assets placed from the library (see assets.py)
         self.placed_assets: list[str] = []
+        # Viewer colour per placed asset, since materials are shared
+        self.asset_colors: dict[str, tuple] = {}
+        # Ground-like objects that clicks pass through
+        self.background_objects: set[str] = set()
         # Sizes of the docked areas (see workspace_layout.py)
         self.layout: AreaLayout = AreaLayout()
         # Index of the visible properties tab
@@ -412,6 +416,7 @@ class SionnaRtGui:
         self._attach_tinted = None
         self._attach_previous_rendering_mode = None
         self.placed_assets.clear()
+        self.asset_colors.clear()
 
         # Clear Polyscope state
         ps.remove_all_structures()
@@ -448,6 +453,18 @@ class SionnaRtGui:
         shapes = self.scene.mi_scene.shapes()
         n_triangles = sum(sh.face_count() for sh in shapes)
         self.scene_stats = (len(shapes), n_triangles)
+
+        # Ground-like objects: nearly flat and covering most of the scene.
+        # Clicks pass through them, since selecting the ground is never useful.
+        scene_extents = np.array(self.scene.mi_scene.bbox().extents())
+        scene_footprint = max(scene_extents[0] * scene_extents[1], 1e-6)
+        self.background_objects = set()
+        for name, scene_object in self.scene.objects.items():
+            extents = np.array(scene_object.mi_mesh.bbox().extents())
+            footprint = extents[0] * extents[1]
+            is_flat = extents[2] <= 0.02 * max(extents[0], extents[1])
+            if is_flat and footprint >= 0.4 * scene_footprint:
+                self.background_objects.add(name)
 
         # Add this scene to the list of known scene names, if missing
         if scene_path not in self.known_scene_paths:
@@ -1173,6 +1190,49 @@ class SionnaRtGui:
         self.reset_accumulation_requested = True
         return True
 
+    def world_to_screen(self, point) -> tuple[float, float] | None:
+        """Project a world point to pixel coordinates, or None if behind."""
+        width, height = ps.get_window_size()
+        view = ps.get_camera_view_matrix()
+        fov_vertical_deg = ps.get_view_camera_parameters().get_fov_vertical_deg()
+        tan_half_fov = np.tan(np.radians(fov_vertical_deg) / 2.0)
+        aspect = width / max(height, 1)
+
+        in_camera = view @ np.append(np.asarray(point, dtype=float), 1.0)
+        if in_camera[2] >= -1e-6:
+            return None
+        u = (in_camera[0] / -in_camera[2]) / (tan_half_fov * aspect)
+        v = (in_camera[1] / -in_camera[2]) / tan_half_fov
+        return ((u + 1.0) * 0.5 * width, (1.0 - v) * 0.5 * height)
+
+    def device_near_screen_position(self, screen_coords, radius_px: float = 20.0):
+        """
+        Closest radio device whose marker is within `radius_px` of the given
+        screen position. Devices are small and often sit against geometry, so
+        clicking near a marker should select it even when something else is
+        nominally in front.
+        """
+        radius = radius_px * self.ui_scale
+        best_distance = radius
+        best: tuple[rt.RadioDevice, SelectionType] | None = None
+        for collection, selection_type in (
+            (self.scene._transmitters, SelectionType.Transmitter),
+            (self.scene._receivers, SelectionType.Receiver),
+        ):
+            for device in collection.values():
+                projected = self.world_to_screen(device.position.numpy().squeeze())
+                if projected is None:
+                    continue
+                distance = float(
+                    np.hypot(
+                        projected[0] - screen_coords[0], projected[1] - screen_coords[1]
+                    )
+                )
+                if distance < best_distance:
+                    best_distance = distance
+                    best = (device, selection_type)
+        return best
+
     def camera_ray(self, screen_coords) -> mi.Ray3f:
         """Ray from the camera through the given screen position."""
         width, height = ps.get_window_size()
@@ -1246,7 +1306,7 @@ class SionnaRtGui:
             scene_object = rt.SceneObject(
                 mi_mesh=build_asset_mesh(spec, name, position),
                 name=name,
-                radio_material=build_asset_material(spec),
+                radio_material=build_asset_material(spec, self.scene),
             )
             self.scene.edit(add=scene_object)
         except Exception as e:
@@ -1255,6 +1315,8 @@ class SionnaRtGui:
             return None
 
         self.placed_assets.append(name)
+        # Materials are shared, so the viewer colour is kept per asset
+        self.asset_colors[name] = spec.color
         self.on_scene_geometry_changed()
         self._set_export_note(f"Placed {spec.label} ({name})")
         return scene_object
@@ -1273,9 +1335,19 @@ class SionnaRtGui:
             return
         if name in self.placed_assets:
             self.placed_assets.remove(name)
+        self.asset_colors.pop(name, None)
         if ps.has_surface_mesh(mesh_id):
             ps.get_surface_mesh(mesh_id).remove()
         self.on_scene_geometry_changed()
+
+    def on_scene_materials_changed(self) -> None:
+        """Refresh what depends on radio materials after one was changed."""
+        # The ray-traced view builds its own scene from the materials
+        self.render_cache = None
+        self.reset_accumulation_requested = True
+        self.reset_radio_map()
+        if self.cfg.paths.auto_update:
+            self.update_paths(clear_first=True, show=True)
 
     def on_scene_geometry_changed(self) -> None:
         """
@@ -1283,6 +1355,15 @@ class SionnaRtGui:
         added or removed.
         """
         add_scene_to_polyscope(self.scene, self.ps_groups)
+        # Meshes are coloured from their material there, so restore the
+        # per-asset colours afterwards
+        for asset_name, color in self.asset_colors.items():
+            scene_object = self.scene.get(asset_name)
+            if scene_object is None:
+                continue
+            mesh_id = scene_object.mi_mesh.id()
+            if ps.has_surface_mesh(mesh_id):
+                ps.get_surface_mesh(mesh_id).set_color(color)
         shapes = self.scene.mi_scene.shapes()
         self.scene_stats = (len(shapes), sum(sh.face_count() for sh in shapes))
         # The ray-traced view builds its own copy of the scene, and our
@@ -1809,21 +1890,28 @@ class SionnaRtGui:
             index = pick_result.structure_data.get("index")
             values = list(collection.values())
             if index is not None and 0 <= index < len(values):
-                self.selected_object = values[index]
-                self.selected_type = selection_type
-                self.properties_tab = PROPERTIES_TABS.index("Object")
+                self.select_radio_device(values[index], selection_type)
                 return True
 
-        # Otherwise a scene object. This also covers the ray-traced view, where
-        # the rasterized meshes are hidden and so cannot be picked directly:
-        # the point is then resolved through the depth buffer.
+        # A device whose marker is under the cursor but which Polyscope did not
+        # report, because it sits against or inside geometry
+        nearby = self.device_near_screen_position(pick_result.screen_coords)
+        if nearby is not None:
+            self.select_radio_device(*nearby)
+            return True
+
+        # Otherwise a scene object, resolved by tracing into the scene so that
+        # it works in the ray-traced view too
         object_name, _ = self.resolve_scene_object_at(
             pick_result.screen_coords, pick_result=pick_result
         )
-        if object_name is not None:
+        if object_name is not None and object_name not in self.background_objects:
             self.select_scene_object(object_name)
             return True
 
+        # The ground plane counts as empty space: selecting it would put the
+        # gizmo at the middle of the whole scene, which is never what a click
+        # on the ground means.
         self.clear_selection()
         return False
 
@@ -1887,6 +1975,13 @@ class SionnaRtGui:
         if psim.MenuItem("Top view"):
             self.move_camera_top()
         psim.EndPopup()
+
+    def select_radio_device(self, device, selection_type) -> None:
+        """Make a radio device the active object."""
+        self.clear_selection()
+        self.selected_object = device
+        self.selected_type = selection_type
+        self.properties_tab = PROPERTIES_TABS.index("Object")
 
     def select_scene_object(self, object_name: str) -> None:
         """Make a scene object (a building, a placed asset, ...) the active one."""

@@ -35,6 +35,8 @@ class AssetSpec:
     scattering_coefficient: float = 0.0
     # Height above the drop point, for objects that fly
     hover_height: float = 0.0
+    # Material name for assets that are not covered by ITU-R P.2040
+    custom_material_name: str = ""
 
 
 # Tissue is not covered by ITU-R P.2040: these are typical values for muscle
@@ -77,6 +79,7 @@ ASSET_LIBRARY: tuple[AssetSpec, ...] = (
         size=(0.5, 0.45, 1.75),
         color=(0.85, 0.65, 0.5),
         material=("custom", HUMAN_MATERIAL),
+        custom_material_name="human-tissue",
         note=(
             "Tissue-like lossy dielectric (eps_r 41, sigma 1.9 S/m).\n"
             "Absorbs more than it reflects, as a body does."
@@ -118,6 +121,7 @@ ASSET_LIBRARY: tuple[AssetSpec, ...] = (
         size=(5.0, 5.0, 8.0),
         color=(0.25, 0.45, 0.2),
         material=("custom", FOLIAGE_MATERIAL),
+        custom_material_name="foliage",
         note="Trunk and canopy: weakly reflecting, strongly scattering.",
         scattering_coefficient=0.6,
     ),
@@ -442,16 +446,31 @@ def build_asset_mesh(spec: AssetSpec, name: str, base_position) -> mi.Mesh:
     return _mesh_from_arrays(name, vertices + offset, faces)
 
 
-def build_asset_material(spec: AssetSpec) -> rt.RadioMaterialBase:
+def asset_material_name(spec: AssetSpec) -> str:
+    """Name the asset's material after what it is made of."""
+    kind, value = spec.material
+    return value if kind == "itu" else spec.custom_material_name
+
+
+def build_asset_material(spec: AssetSpec, scene: rt.Scene | None = None):
+    """
+    Material for an asset. Materials are shared by name, so placing three cars
+    reuses one "metal" material rather than adding a new one each time, and the
+    scene's existing materials are reused when they match.
+    """
+    name = asset_material_name(spec)
+    if scene is not None:
+        existing = scene.radio_materials.get(name)
+        if existing is not None:
+            return existing
+
     kind, value = spec.material
     if kind == "itu":
         return rt.ITURadioMaterial(
-            name=f"asset-{spec.key}-material",
+            name=name,
             itu_type=value,
             thickness=0.05,
             scattering_coefficient=spec.scattering_coefficient,
             color=spec.color,
         )
-    return rt.RadioMaterial(
-        name=f"asset-{spec.key}-material", color=spec.color, **value
-    )
+    return rt.RadioMaterial(name=name, color=spec.color, **value)
