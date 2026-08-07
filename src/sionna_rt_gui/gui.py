@@ -76,13 +76,23 @@ from .workspace_layout import (
     area_header,
     begin_area,
     end_area,
+    end_property_row,
+    property_row,
     set_editor_imgui_style,
     splitter,
     tab_strip,
 )
 
 # Tabs of the properties area, in display order
-PROPERTIES_TABS = ["Object", "Devices", "Radio map", "Paths", "Scene", "Render"]
+PROPERTIES_TABS = [
+    "Object",
+    "Devices",
+    "Radio map",
+    "Paths",
+    "Assets",
+    "Scene",
+    "Render",
+]
 
 CTRL_OR_CMD = "Cmd" if sys.platform == "darwin" else "Ctrl"
 # Bounding-box outline drawn while picking an object to attach a device to
@@ -225,6 +235,12 @@ class SionnaRtGui:
         self.layout: AreaLayout = AreaLayout()
         # Index of the visible properties tab
         self.properties_tab: int = 0
+        # Previous gizmo transform while moving a scene object
+        self.object_gizmo_previous: np.ndarray | None = None
+        # Right-click context menu state
+        self.context_menu_requested: bool = False
+        self.context_menu_position: np.ndarray | None = None
+        self.context_menu_object: str | None = None
 
         # --- Polyscope setup
         # Can be used to derive e.g. random seeds.
@@ -978,6 +994,110 @@ class SionnaRtGui:
             "applied_rotation": np.eye(3),
         }
 
+    def _after_geometry_edit(self, scene_object: rt.SceneObject) -> None:
+        """Refresh the views after an object's geometry moved."""
+        mesh = scene_object.mi_mesh
+        if ps.has_surface_mesh(mesh.id()):
+            ps.get_surface_mesh(mesh.id()).update_vertex_positions(
+                mesh.vertex_positions_buffer().numpy().reshape(-1, 3)
+            )
+        # The ray-traced view keeps its own copy of the scene
+        if self.render_cache is not None:
+            try:
+                params = mi.traverse(self.render_cache["visual_scene"])
+                key = f"{mesh.id()}.vertex_positions"
+                if key in params:
+                    params[key] = mesh.vertex_positions_buffer()
+                    params.update()
+            except Exception as e:
+                logging.debug("Could not update ray-traced scene: %s", e)
+        self.reset_accumulation_requested = True
+
+    def transform_scene_object(
+        self,
+        scene_object: rt.SceneObject,
+        translation=None,
+        rotation_increment=None,
+    ) -> bool:
+        """
+        Translate and / or rotate a scene object by editing its vertices in the
+        wireless scene. Used for objects whose mesh buffers sionna's cached
+        scene parameters do not expose.
+        """
+        needs_translation = translation is not None and not np.allclose(
+            translation, 0.0, atol=1e-6
+        )
+        needs_rotation = rotation_increment is not None and not np.allclose(
+            rotation_increment, np.eye(3), atol=1e-6
+        )
+        if not needs_translation and not needs_rotation:
+            return False
+
+        mesh = scene_object.mi_mesh
+        if self._full_scene_params is None:
+            self._full_scene_params = mi.traverse(self.scene.mi_scene)
+        key = mesh.id() + ".vertex_positions"
+        if key not in self._full_scene_params:
+            logging.warning("Cannot move scene object %s: no %s", mesh.id(), key)
+            return False
+
+        vertices = dr.unravel(mi.Point3f, self._full_scene_params[key])
+        if needs_rotation:
+            # Rotate around the object's own center, then translate
+            center = mi.Point3f(*scene_object.position.numpy().squeeze().tolist())
+            vertices = (
+                mi.Matrix3f(np.asarray(rotation_increment).tolist())
+                @ (vertices - center)
+            ) + center
+        if needs_translation:
+            vertices = vertices + mi.Point3f(
+                *np.asarray(translation, dtype=float).tolist()
+            )
+        self._full_scene_params[key] = dr.ravel(vertices)
+        self._full_scene_params.update()
+        # Invalidate sionna's solver caches
+        self.scene.scene_geometry_updated()
+        self._after_geometry_edit(scene_object)
+        return True
+
+    def set_object_position(self, scene_object: rt.SceneObject, position) -> bool:
+        """Move a scene object to an absolute position."""
+        target = np.asarray(position, dtype=float)
+        current = scene_object.position.numpy().squeeze()
+        if np.allclose(target, current, atol=1e-6):
+            return False
+        try:
+            scene_object.position = mi.Point3f(*target.tolist())
+        except (KeyError, RuntimeError):
+            # Older scenes do not expose their mesh buffers to sionna
+            return self.transform_scene_object(
+                scene_object, translation=target - current
+            )
+        self.scene.scene_geometry_updated()
+        self._after_geometry_edit(scene_object)
+        return True
+
+    def set_object_orientation(self, scene_object: rt.SceneObject, euler) -> bool:
+        """Set a scene object's orientation, in radians."""
+        target = np.asarray(euler, dtype=float)
+        current = scene_object.orientation.numpy().squeeze()
+        if np.allclose(target, current, atol=1e-6):
+            return False
+        try:
+            scene_object.orientation = mi.Point3f(*target.tolist())
+        except (KeyError, RuntimeError):
+            increment = np.array(
+                rotation_matrix(mi.Point3f(*target.tolist())).numpy()
+            ).squeeze() @ np.array(
+                rotation_matrix(mi.Point3f(*current.tolist())).numpy()
+            ).squeeze().T
+            return self.transform_scene_object(
+                scene_object, rotation_increment=increment
+            )
+        self.scene.scene_geometry_updated()
+        self._after_geometry_edit(scene_object)
+        return True
+
     def update_attached_object(self, device: rt.RadioDevice) -> bool:
         """
         Move the scene object attached to this device (if any) so it stays
@@ -1508,7 +1628,20 @@ class SionnaRtGui:
         has_right_click = allow_click and psim.IsMouseClicked(
             psim.ImGuiMouseButton_Right
         )
+        has_right_release = allow_click and psim.IsMouseReleased(
+            psim.ImGuiMouseButton_Right
+        )
         has_active_item = psim.IsAnyItemActive()
+
+        # Plain right click (without dragging, which pans the camera) opens the
+        # context menu for whatever is under the cursor.
+        if (
+            has_right_release
+            and not has_mouse_drag
+            and not self.was_mouse_dragging
+            and not (imgui_io.KeyCtrl or imgui_io.KeyShift or imgui_io.KeyAlt)
+        ):
+            self.request_context_menu(imgui_io.MousePos)
 
         # TODO: +/- to zoom in/out
         # TODO: keyboard shortcuts to move around (WASD + QE)
@@ -1660,13 +1793,25 @@ class SionnaRtGui:
                         self.update_paths(clear_first=True, show=True)
             return True
 
-        if not pick_result.is_hit or "index" not in pick_result.structure_data:
+        if not pick_result.is_hit:
             self.clear_selection()
             return False
 
         if pick_result.structure_name == "radio_map":
             self.set_rm_probe(pick_result.position)
             return True
+
+        if "index" not in pick_result.structure_data:
+            # Scene geometry: select the object so it can be edited
+            mesh_to_object = {
+                o.mi_mesh.id(): name for name, o in self.scene.objects.items()
+            }
+            object_name = mesh_to_object.get(pick_result.structure_name)
+            if object_name is not None:
+                self.select_scene_object(object_name)
+                return True
+            self.clear_selection()
+            return False
 
         picked_index = pick_result.structure_data["index"]
         if pick_result.structure_name in "Transmitters":
@@ -1681,9 +1826,81 @@ class SionnaRtGui:
         self.clear_selection()
         return False
 
+    def request_context_menu(self, screen_coords) -> None:
+        """Remember what was under the cursor, and open the context menu."""
+        world = ps.screen_coords_to_world_position(screen_coords)
+        self.context_menu_position = (
+            np.asarray(world, dtype=float) if np.all(np.isfinite(world)) else None
+        )
+        object_name, _ = self.resolve_scene_object_at(screen_coords)
+        self.context_menu_object = object_name
+        self.context_menu_requested = True
+
+    def viewport_context_menu(self) -> None:
+        """Right-click menu: act on the point and object under the cursor."""
+        if self.context_menu_requested:
+            psim.OpenPopup("##viewport_context")
+            self.context_menu_requested = False
+
+        if not psim.BeginPopup("##viewport_context"):
+            return
+
+        position = self.context_menu_position
+        has_position = position is not None
+        if has_position:
+            psim.TextDisabled(
+                f"({position[0]:.1f}, {position[1]:.1f}, {position[2]:.1f})"
+            )
+        else:
+            psim.TextDisabled("Empty space")
+        psim.Separator()
+
+        psim.BeginDisabled(not has_position)
+        if psim.MenuItem("Add transmitter here"):
+            self.add_radio_device(position + [0.0, 0.0, 1.5], is_transmitter=True)
+        if psim.MenuItem("Add receiver here"):
+            self.add_radio_device(position + [0.0, 0.0, 1.5], is_transmitter=False)
+        if psim.BeginMenu("Add asset here"):
+            for spec in ASSET_LIBRARY:
+                if psim.MenuItem(spec.label):
+                    self.add_asset(spec, position=position)
+            psim.EndMenu()
+        psim.EndDisabled()
+
+        if self.context_menu_object is not None:
+            psim.Separator()
+            name = self.context_menu_object
+            if psim.MenuItem(f"Select '{name}'"):
+                self.select_scene_object(name)
+            if name in self.placed_assets and psim.MenuItem(f"Remove '{name}'"):
+                self.remove_asset(name)
+
+        if self.radio_map is not None and has_position:
+            psim.Separator()
+            if psim.MenuItem("Probe radio map here"):
+                self.set_rm_probe(position)
+
+        psim.Separator()
+        if psim.MenuItem("Fit view"):
+            self.fit_camera_to_scene()
+        if psim.MenuItem("Top view"):
+            self.move_camera_top()
+        psim.EndPopup()
+
+    def select_scene_object(self, object_name: str) -> None:
+        """Make a scene object (a building, a placed asset, ...) the active one."""
+        scene_object = self.scene.get(object_name)
+        if scene_object is None:
+            return
+        self.clear_selection()
+        self.selected_object = scene_object
+        self.selected_type = SelectionType.Mesh
+        self.properties_tab = PROPERTIES_TABS.index("Object")
+
     def clear_selection(self):
         self.selected_object = None
         self.selected_type = None
+        self.object_gizmo_previous = None
         if ps.has_point_cloud("Gizmo"):
             ps.get_point_cloud("Gizmo").remove()
         if ps.has_curve_network("Trajectory"):
@@ -1732,14 +1949,14 @@ class SionnaRtGui:
         """
         frequency_ghz = float(self.scene.frequency[0]) / 1e9
 
-        psim.PushItemWidth(160 * self.ui_scale)
+        property_row("Carrier frequency [GHz]", self.ui_scale)
         changed, new_frequency_ghz = psim.InputFloat(
-            "Carrier frequency [GHz]##scene",
+            "##carrier_frequency",
             frequency_ghz,
             format="%.3f",
             flags=psim.ImGuiInputTextFlags_EnterReturnsTrue,
         )
-        psim.PopItemWidth()
+        end_property_row()
         if psim.IsItemHovered():
             psim.SetTooltip(
                 "Press Enter to apply. Radio materials and propagation\n"
@@ -1852,19 +2069,24 @@ class SionnaRtGui:
 
         psim.Dummy((0, 2 * self.ui_scale))
 
-    def section_scene(self) -> None:
+    def section_scene(self, include_picker: bool = True, include_camera: bool = True) -> None:
+        """
+        Scene settings. The picker and camera presets are skipped when the top
+        bar already carries them, to avoid duplicate controls.
+        """
         if psim.CollapsingHeader("Scene", psim.ImGuiTreeNodeFlags_DefaultOpen):
             psim.Spacing()
 
-            # Quick pick from built-in or recently-loaded scenes.
-            psim.Text("Scene selection:")
-            changed, combo_i = psim.Combo(
-                "##scene_picker",
-                self.current_scene_idx,
-                self.known_scene_names,
-            )
-            if changed:
-                self.load_scene_requested = self.known_scene_paths[combo_i]
+            if include_picker:
+                # Quick pick from built-in or recently-loaded scenes.
+                psim.Text("Scene selection:")
+                changed, combo_i = psim.Combo(
+                    "##scene_picker",
+                    self.current_scene_idx,
+                    self.known_scene_names,
+                )
+                if changed:
+                    self.load_scene_requested = self.known_scene_paths[combo_i]
 
             n_meshes, n_triangles = getattr(self, "scene_stats", (0, 0))
             if n_triangles >= 1_000_000:
@@ -1877,23 +2099,24 @@ class SionnaRtGui:
 
             psim.Spacing()
 
-            psim.AlignTextToFramePadding()
-            psim.Text("Camera:")
-            psim.SameLine()
-            if psim.Button("Top##camera"):
-                self.move_camera_top()
-            psim.SameLine()
-            if psim.Button("Fit##camera"):
-                self.fit_camera_to_scene()
-            if psim.IsItemHovered():
-                psim.SetTooltip("Fit the whole scene in view (F)")
-            psim.SameLine()
-            if psim.Button("Home##camera"):
-                self.move_camera_home()
-            if psim.IsItemHovered():
-                psim.SetTooltip("Return to the initial view (R)")
+            if include_camera:
+                psim.AlignTextToFramePadding()
+                psim.Text("Camera:")
+                psim.SameLine()
+                if psim.Button("Top##camera"):
+                    self.move_camera_top()
+                psim.SameLine()
+                if psim.Button("Fit##camera"):
+                    self.fit_camera_to_scene()
+                if psim.IsItemHovered():
+                    psim.SetTooltip("Fit the whole scene in view (F)")
+                psim.SameLine()
+                if psim.Button("Home##camera"):
+                    self.move_camera_home()
+                if psim.IsItemHovered():
+                    psim.SetTooltip("Return to the initial view (R)")
 
-            psim.Spacing()
+                psim.Spacing()
             self.frequency_gui()
             psim.Spacing()
 
@@ -1997,34 +2220,38 @@ class SionnaRtGui:
             # -- Radio map computation options
             psim.Spacing()
 
+            property_row("Cell size [m]", self.ui_scale)
             changed, self.cfg.radio_map.cell_size = psim.InputFloat2(
-                "Cell size",
+                "##rm_cell_size",
                 self.cfg.radio_map.cell_size,
-                # v_min=0.1,
-                # v_max=100,
                 format="%.2f",
             )
+            end_property_row()
             if changed:
                 self.cfg.radio_map.cell_size = tuple(
                     min(max(v, 0.01), 100) for v in self.cfg.radio_map.cell_size
                 )
             needs_update |= changed
 
+            property_row("Samples per iteration", self.ui_scale)
             changed, self.cfg.radio_map.log_samples_per_it = psim.SliderFloat(
-                "Samples / it (log 10)",
+                "##rm_samples",
                 self.cfg.radio_map.log_samples_per_it,
                 v_min=0,
                 v_max=9,
                 format="10^%.1f",
             )
+            end_property_row()
             needs_update |= changed
 
+            property_row("Max depth", self.ui_scale)
             changed, self.cfg.radio_map.max_depth = psim.SliderInt(
-                "Max depth##rm",
+                "##rm_max_depth",
                 self.cfg.radio_map.max_depth,
                 v_min=1,
                 v_max=10,
             )
+            end_property_row()
             needs_update |= changed
 
             # -- Checkboxes table
@@ -2138,12 +2365,14 @@ class SionnaRtGui:
                 # Fill in the CIR data right away
                 self.update_paths(show=True)
 
+            property_row("Max depth", self.ui_scale)
             changed, self.cfg.paths.max_depth = psim.SliderInt(
-                "Max depth##paths",
+                "##paths_max_depth",
                 self.cfg.paths.max_depth,
                 v_min=1,
                 v_max=10,
             )
+            end_property_row()
             needs_update |= changed
 
             psim.SetNextItemWidth(200 * self.ui_scale)
@@ -2362,25 +2591,39 @@ class SionnaRtGui:
             if psim.Button("Home##topbar"):
                 self.move_camera_home()
 
-            # Right-aligned actions
+            # Right-aligned actions, sized from their actual labels so the
+            # last one is never clipped
+            labels = ["Save view", "Windows", "?"]
+            style = psim.GetStyle()
+            widths = [
+                psim.CalcTextSize(label)[0] + 2 * style.FramePadding[0]
+                for label in labels
+            ]
+            buttons_width = sum(widths) + (len(labels) - 1) * style.ItemSpacing[0]
             psim.SameLine()
-            buttons_width = 150 * scale
             psim.SetCursorPosX(
                 max(
                     psim.GetCursorPosX(),
-                    psim.GetCursorPosX() + psim.GetContentRegionAvail()[0] - buttons_width,
+                    psim.GetCursorPosX()
+                    + psim.GetContentRegionAvail()[0]
+                    - buttons_width
+                    - style.WindowPadding[0],
                 )
             )
-            if psim.Button("Save view##topbar"):
+            if psim.Button(f"{labels[0]}##topbar"):
                 self.save_screenshot()
+            if psim.IsItemHovered():
+                psim.SetTooltip("Save a PNG screenshot of the current view")
             psim.SameLine()
-            if psim.Button("Layout##topbar"):
+            if psim.Button(f"{labels[1]}##topbar"):
                 self.cfg.use_docked_layout = False
             if psim.IsItemHovered():
-                psim.SetTooltip("Switch back to the floating window layout")
+                psim.SetTooltip("Switch to the floating window layout")
             psim.SameLine()
-            if psim.Button("?##topbar"):
+            if psim.Button(f"{labels[2]}##topbar"):
                 self.cfg.show_help_window = not self.cfg.show_help_window
+            if psim.IsItemHovered():
+                psim.SetTooltip("Controls & shortcuts (H)")
         end_area()
         psim.PopStyleVar()
 
@@ -2406,11 +2649,10 @@ class SionnaRtGui:
                     psim.SetTooltip(spec.note)
 
             psim.Dummy((0.0, 6 * scale))
-            area_header("Compute", scale)
-            if psim.Button("Radio map##tools", full):
-                self.set_radio_map(self.compute_radio_map(), show=True)
-            if psim.Button("Paths##tools", full):
-                self.update_paths(clear_first=True, show=True)
+            area_header("Select", scale)
+            psim.PushTextWrapPos(0.0)
+            psim.TextDisabled("Click any object in the 3D view to edit it.")
+            psim.PopTextWrapPos()
         end_area()
 
     @staticmethod
@@ -2459,7 +2701,12 @@ class SionnaRtGui:
 
             for asset_name in self.placed_assets:
                 psim.PushID(f"outliner_asset_{asset_name}")
-                psim.Selectable(asset_name, False)
+                is_selected = (
+                    self.selected_type == SelectionType.Mesh
+                    and getattr(self.selected_object, "name", None) == asset_name
+                )
+                if psim.Selectable(asset_name, is_selected):
+                    self.select_scene_object(asset_name)
                 psim.PopID()
 
             psim.Dummy((0.0, 4 * scale))
@@ -2519,9 +2766,11 @@ class SionnaRtGui:
                     self.section_radio_map()
                 case "Paths":
                     self.section_paths()
-                case "Scene":
-                    self.section_scene()
+                case "Assets":
                     self.section_assets()
+                case "Scene":
+                    # The scene picker and camera presets live in the top bar
+                    self.section_scene(include_picker=False, include_camera=False)
                 case "Render":
                     self.section_rendering()
         end_area()
@@ -2598,6 +2847,8 @@ class SionnaRtGui:
 
         if self.cfg.gui_mode == GuiMode.HIDDEN:
             return
+
+        self.viewport_context_menu()
 
         if self.cfg.use_docked_layout:
             self.workspace_gui()

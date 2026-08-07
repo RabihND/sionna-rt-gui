@@ -49,15 +49,18 @@ def set_editor_imgui_style() -> None:
         style.PopupRounding = 4.0
         style.ScrollbarRounding = 6.0
         style.WindowPadding = (8, 6)
-        style.FramePadding = (7, 3)
-        style.ItemSpacing = (6, 4)
+        style.FramePadding = (7, 4)
+        style.ItemSpacing = (6, 5)
         style.ItemInnerSpacing = (5, 4)
+        style.CellPadding = (6, 3)
         style.IndentSpacing = 16.0
         style.GrabMinSize = 10.0
         style.ScrollbarSize = 11.0
         style.WindowBorderSize = 1.0
         style.ChildBorderSize = 1.0
-        style.FrameBorderSize = 0.0
+        # A hairline outline around every widget: this is what separates a
+        # designed panel from a stack of flat rectangles.
+        style.FrameBorderSize = 1.0
         style.PopupBorderSize = 1.0
         style.TabBorderSize = 0.0
         style.WindowTitleAlign = (0.0, 0.5)

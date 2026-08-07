@@ -18,6 +18,7 @@ from .animation import trajectory_gui
 from .config import DEFAULT_SLICE_PLANE_NAME
 from .pattern_viz import default_pattern_scale, update_antenna_pattern_structure
 from .ps_utils import ACCENT_BRIGHT
+from .workspace_layout import end_property_row, property_row
 from .sionna_utils import set_or_update_radio_devices_polyscope
 
 
@@ -75,6 +76,85 @@ def selection_gui(
     psim.End()
 
 
+def scene_object_contents(gui: "SionnaRtGui", scene_object: rt.SceneObject) -> None:
+    """
+    Properties of a plain scene object (a building, a placed asset, ...):
+    editable position and orientation, its radio material, and a move gizmo.
+    """
+    name = scene_object.name
+    psim.Text(name)
+    psim.SameLine()
+    if name in gui.placed_assets:
+        bw = 80 * gui.ui_scale
+        psim.SetCursorPosX(
+            psim.GetCursorPosX() + psim.GetContentRegionAvail()[0] - bw - 5
+        )
+        pressed_del = not psim.IsAnyItemActive() and psim.IsKeyPressed(
+            psim.ImGuiKey_Delete, repeat=False
+        )
+        if psim.Button("Remove##object", (bw, 0)) or pressed_del:
+            gui.remove_asset(name)
+            gui.clear_selection()
+            return
+    else:
+        psim.TextDisabled("(scene geometry)")
+
+    material = scene_object.radio_material
+    psim.TextDisabled(
+        f"Material: {getattr(material, 'name', type(material).__name__)}"
+    )
+    extents = np.array(scene_object.mi_mesh.bbox().extents())
+    psim.TextDisabled(
+        f"Size: {extents[0]:.2f} x {extents[1]:.2f} x {extents[2]:.2f} m"
+    )
+
+    psim.Spacing()
+    position = scene_object.position.numpy().squeeze()
+    property_row("Position [m]", gui.ui_scale)
+    changed, new_position = psim.DragFloat3(
+        "##object_position", tuple(position), 0.25, format="%.2f"
+    )
+    end_property_row()
+    if changed:
+        gui.set_object_position(scene_object, new_position)
+
+    orientation_deg = np.degrees(scene_object.orientation.numpy().squeeze())
+    property_row("Orientation [deg]", gui.ui_scale)
+    changed, new_orientation = psim.DragFloat3(
+        "##object_orientation", tuple(orientation_deg), 1.0, format="%.1f"
+    )
+    end_property_row()
+    if changed:
+        gui.set_object_orientation(scene_object, np.radians(new_orientation).tolist())
+
+    psim.Spacing()
+    psim.TextDisabled("Drag the gizmo in the 3D view to move this object.")
+
+    # --- Move gizmo. Deltas are applied as they happen, so the object follows
+    # the gizmo without needing to track an absolute reference pose.
+    if not ps.has_point_cloud("Gizmo"):
+        struct = ps.register_point_cloud(
+            "Gizmo", position[None, :], enabled=False
+        )
+        gizmo = struct.get_transformation_gizmo()
+        gizmo.set_enabled(True)
+        gizmo.set_allow_scaling(False)
+        struct.set_ignore_slice_plane(DEFAULT_SLICE_PLANE_NAME, True)
+        gui.object_gizmo_previous = None
+    else:
+        struct = ps.get_point_cloud("Gizmo")
+
+    to_world = struct.get_transform()
+    previous = gui.object_gizmo_previous
+    if previous is not None and not np.allclose(previous, to_world):
+        translation = to_world[:3, 3] - previous[:3, 3]
+        rotation = to_world[:3, :3] @ np.linalg.inv(previous[:3, :3])
+        gui.transform_scene_object(
+            scene_object, translation=translation, rotation_increment=rotation
+        )
+    gui.object_gizmo_previous = to_world
+
+
 def selection_contents(
     gui: "SionnaRtGui",
     selected_object: rt.SceneObject | None,
@@ -85,7 +165,16 @@ def selection_contents(
     can be shown either floating or inside a docked area.
     """
     if selected_object is None:
-        psim.TextDisabled("No active object.\nClick a radio device in the 3D view.")
+        psim.PushTextWrapPos(0.0)
+        psim.TextDisabled(
+            "No active object. Click a radio device or a scene object "
+            "in the 3D view to edit it here."
+        )
+        psim.PopTextWrapPos()
+        return
+
+    if selected_type == SelectionType.Mesh:
+        scene_object_contents(gui, selected_object)
         return
 
     rd_update_needed = False
@@ -124,23 +213,23 @@ def selection_contents(
         ):
             # Reserve room for the widget labels, which would otherwise be
             # clipped when the window is narrow.
-            psim.PushItemWidth(-140 * gui.ui_scale)
             position = rd.position.numpy().squeeze()
+            property_row("Position [m]", gui.ui_scale)
             changed, new_position = psim.DragFloat3(
-                "Position [m]##selection", tuple(position), 0.25, format="%.2f"
+                "##position", tuple(position), 0.25, format="%.2f"
             )
+            end_property_row()
             if changed:
                 rd.position = mi.Point3f(*new_position)
                 dr.make_opaque(rd.position)
                 rd_update_needed = True
 
             orientation_deg = np.degrees(rd.orientation.numpy().squeeze())
+            property_row("Orientation [deg]", gui.ui_scale)
             changed, new_orientation = psim.DragFloat3(
-                "Orientation [deg]##selection",
-                tuple(orientation_deg),
-                1.0,
-                format="%.1f",
+                "##orientation", tuple(orientation_deg), 1.0, format="%.1f"
             )
+            end_property_row()
             if changed:
                 # Note: mi.Point3f rejects numpy scalar types, convert to float
                 rd.orientation = mi.Point3f(*np.radians(new_orientation).tolist())
@@ -149,13 +238,11 @@ def selection_contents(
 
             if is_transmitter:
                 power_dbm = float(rd.power_dbm[0])
+                property_row("TX power [dBm]", gui.ui_scale)
                 changed, new_power_dbm = psim.SliderFloat(
-                    "TX power [dBm]##selection",
-                    power_dbm,
-                    -20.0,
-                    60.0,
-                    format="%.1f",
+                    "##tx_power", power_dbm, -20.0, 60.0, format="%.1f"
                 )
+                end_property_row()
                 if changed:
                     rd.power_dbm = new_power_dbm
                     rd_update_needed = True
@@ -164,12 +251,11 @@ def selection_contents(
                     psim.SetTooltip(f"{watts:.3g} W")
 
             velocity = rd.velocity.numpy().squeeze()
+            property_row("Velocity [m/s]", gui.ui_scale)
             changed, new_velocity = psim.DragFloat3(
-                "Velocity [m/s]##selection",
-                tuple(velocity),
-                0.1,
-                format="%.2f",
+                "##velocity", tuple(velocity), 0.1, format="%.2f"
             )
+            end_property_row()
             if changed:
                 rd.velocity = mi.Vector3f(*[float(v) for v in new_velocity])
                 dr.make_opaque(rd.velocity)
@@ -180,7 +266,6 @@ def selection_contents(
                     "Independent of the orientation. While a trajectory\n"
                     "plays, it is overwritten with the travel velocity."
                 )
-            psim.PopItemWidth()
             psim.TreePop()
 
         # --- Attach the device to a scene object (e.g. a vehicle)
@@ -189,11 +274,11 @@ def selection_contents(
         current_index = 0
         if attachment is not None and attachment["object"] in object_names:
             current_index = object_names.index(attachment["object"])
-        psim.PushItemWidth(-140 * gui.ui_scale)
+        property_row("Attach to object", gui.ui_scale)
         changed, new_index = psim.Combo(
-            "Attach to object##selection", current_index, object_names
+            "##attach_object", current_index, object_names
         )
-        psim.PopItemWidth()
+        end_property_row()
         if psim.IsItemHovered():
             psim.SetTooltip(
                 "Snap the device on top of a scene object. The object then\n"

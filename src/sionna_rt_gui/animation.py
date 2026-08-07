@@ -29,7 +29,8 @@ class LoopingMode(Enum):
 LOOPING_MODE_NAMES = ["None", "Mirror", "Repeat"]
 assert len(LOOPING_MODE_NAMES) == len(LoopingMode)
 
-SPEED_BUTTON_COLOR = np.array((0.269, 0.474, 0.377, 1.0))
+# Active speed button, matching the editor theme's selection colour
+SPEED_BUTTON_COLOR = np.array((0.278, 0.447, 0.702, 1.0))
 
 
 @dataclass(kw_only=True)
