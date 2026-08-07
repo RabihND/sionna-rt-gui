@@ -280,7 +280,9 @@ class SionnaRtGui:
         self.coverage_threshold_dbm: float = -95.0
         # Solver work per frame, steered by the measured frame time
         self._rm_refine_samples: int = 0
+        self._baseline_frame_s: float | None = None
         self.solver_update_delay_s: float = 0.0
+        self.solver_delay_max_s: float = 0.12
         self.frame_time_target_s: float = 1.0 / 30.0
         # The simulation only runs once started, and can then be paused
         self.simulation_running: bool = False
@@ -871,16 +873,41 @@ class SionnaRtGui:
         frame time is the signal instead: too slow, ask for less work; comfortably
         fast, ask for more.
         """
-        target = self.frame_time_target_s
+        if frame_time_s <= 0.0:
+            return
+
+        # The cheapest recent frame approximates what drawing alone costs. It
+        # decays upwards slowly, so a heavier scene or a bigger window is picked
+        # up rather than held against the solvers forever.
+        if self._baseline_frame_s is None:
+            self._baseline_frame_s = frame_time_s
+        else:
+            self._baseline_frame_s = min(
+                frame_time_s, self._baseline_frame_s * 1.01
+            )
+
+        # Only the time above what drawing costs is the solvers' to give back.
+        # Without this the controller starves them whenever rendering alone is
+        # slower than the target, and the radio map stops converging.
+        target = max(self.frame_time_target_s, self._baseline_frame_s * 1.25)
+
+        ceiling = float(max(self.cfg.radio_map.samples_per_it, 1024))
+        floor = float(min(max(ceiling / 64.0, 10_000.0), ceiling))
         if frame_time_s > target:
             # Back off quickly
-            self._rm_refine_samples = max(int(self._rm_refine_samples * 0.6), 1024)
-            self.solver_update_delay_s = min(
-                max(self.solver_update_delay_s * 1.5, 0.05), 1.0
+            self._rm_refine_samples = int(
+                min(max(self._rm_refine_samples * 0.6, floor), ceiling)
             )
-        elif frame_time_s < 0.7 * target:
+            # Paths are a live link between devices, so a long wait reads as
+            # lag rather than smoothness: never wait longer than the user allows.
+            self.solver_update_delay_s = min(
+                max(self.solver_update_delay_s * 1.5, 0.03), self.solver_delay_max_s
+            )
+        elif frame_time_s < 0.85 * target:
             # Creep back up
-            self._rm_refine_samples = int(self._rm_refine_samples * 1.2)
+            self._rm_refine_samples = int(
+                min(max(self._rm_refine_samples * 1.2, floor), ceiling)
+            )
             self.solver_update_delay_s = max(self.solver_update_delay_s * 0.8, 0.0)
 
     def rm_refine_samples_per_tx(self) -> int:
@@ -892,6 +919,9 @@ class SionnaRtGui:
         if self._rm_refine_samples <= 0:
             # Start modestly; observe_frame_time grows this if there is headroom
             self._rm_refine_samples = min(configured, 500_000)
+        self._rm_refine_samples = max(
+            self._rm_refine_samples, min(configured // 64, configured)
+        )
         return int(min(self._rm_refine_samples, configured))
 
     def has_visible_radio_map(self) -> tuple[bool, ps.SurfaceMesh]:
@@ -2615,6 +2645,26 @@ class SionnaRtGui:
             if changed and self.cfg.paths.compute_cir:
                 # Fill in the CIR data right away
                 self.update_paths(show=True)
+
+            property_row("Update at least every [ms]", self.ui_scale)
+            changed, delay_ms = psim.SliderFloat(
+                "##paths_update_interval",
+                self.solver_delay_max_s * 1000.0,
+                20.0,
+                500.0,
+                format="%.0f",
+            )
+            end_property_row()
+            if changed:
+                self.solver_delay_max_s = delay_ms / 1000.0
+                self.solver_update_delay_s = min(
+                    self.solver_update_delay_s, self.solver_delay_max_s
+                )
+            if psim.IsItemHovered():
+                psim.SetTooltip(
+                    "How stale the paths may get while devices move.\n"
+                    "Lower follows movement more closely and costs frames."
+                )
 
             property_row("Max depth", self.ui_scale)
             changed, self.cfg.paths.max_depth = psim.SliderInt(
