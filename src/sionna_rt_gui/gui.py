@@ -67,8 +67,12 @@ from .sionna_utils import (
     get_normal_for_path,
     set_or_update_radio_devices_polyscope,
 )
-from .cir_viz import cir_window
-from .pattern_viz import pattern_cuts_window, remove_antenna_pattern_structure
+from .cir_viz import cir_contents, cir_window
+from .pattern_viz import (
+    pattern_cuts_contents,
+    pattern_cuts_window,
+    remove_antenna_pattern_structure,
+)
 from .selection import SelectionType, selection_contents, selection_gui
 from .workspace_layout import (
     AreaLayout,
@@ -82,6 +86,9 @@ from .workspace_layout import (
     splitter,
     tab_strip,
 )
+
+# Editors available in the bottom area
+BOTTOM_TABS = ["Timeline", "Impulse response", "Antenna pattern"]
 
 # Tabs of the properties area, in display order
 PROPERTIES_TABS = [
@@ -241,8 +248,9 @@ class SionnaRtGui:
         self._visual_vertex_keys: dict[str, str] = {}
         # Sizes of the docked areas (see workspace_layout.py)
         self.layout: AreaLayout = AreaLayout()
-        # Index of the visible properties tab
+        # Index of the visible properties tab, and of the bottom editor
         self.properties_tab: int = 0
+        self.bottom_tab: int = 0
         # Previous gizmo transform while moving a scene object
         self.object_gizmo_previous: np.ndarray | None = None
         # Right-click context menu state
@@ -2142,6 +2150,20 @@ class SionnaRtGui:
             psim.SetTooltip("Controls & shortcuts (H)")
 
         psim.TextDisabled("Ray-traced radio propagation")
+        psim.SameLine()
+        back_label = "Docked panels"
+        style = psim.GetStyle()
+        back_width = psim.CalcTextSize(back_label)[0] + 2 * style.FramePadding[0]
+        psim.SetCursorPosX(
+            max(
+                psim.GetCursorPosX(),
+                psim.GetCursorPosX() + psim.GetContentRegionAvail()[0] - back_width,
+            )
+        )
+        if psim.Button(f"{back_label}##header"):
+            self.set_docked_layout(True)
+        if psim.IsItemHovered():
+            psim.SetTooltip("Switch back to the docked workspace layout")
 
         # Accent underline
         x, y = psim.GetCursorScreenPos()
@@ -2646,6 +2668,16 @@ class SionnaRtGui:
     # ------------------------
     # Docked workspace layout
 
+    def set_docked_layout(self, docked: bool) -> None:
+        """Switch between the docked workspace and floating windows."""
+        if self.cfg.use_docked_layout == docked:
+            return
+        self.cfg.use_docked_layout = docked
+        if docked:
+            set_editor_imgui_style()
+        else:
+            set_custom_imgui_style()
+
     def workspace_gui(self) -> None:
         """
         Fixed, non-overlapping areas: a top bar, a tool column, the outliner
@@ -2719,7 +2751,7 @@ class SionnaRtGui:
 
             # Right-aligned actions, sized from their actual labels so the
             # last one is never clipped
-            labels = ["Save view", "Windows", "?"]
+            labels = ["Save view", "Floating panels", "?"]
             style = psim.GetStyle()
             widths = [
                 psim.CalcTextSize(label)[0] + 2 * style.FramePadding[0]
@@ -2742,9 +2774,12 @@ class SionnaRtGui:
                 psim.SetTooltip("Save a PNG screenshot of the current view")
             psim.SameLine()
             if psim.Button(f"{labels[1]}##topbar"):
-                self.cfg.use_docked_layout = False
+                self.set_docked_layout(False)
             if psim.IsItemHovered():
-                psim.SetTooltip("Switch to the floating window layout")
+                psim.SetTooltip(
+                    "Switch to floating windows. The top bar button there\n"
+                    "brings these docked panels back."
+                )
             psim.SameLine()
             if psim.Button(f"{labels[2]}##topbar"):
                 self.cfg.show_help_window = not self.cfg.show_help_window
@@ -2905,7 +2940,36 @@ class SionnaRtGui:
         if rect[3] < 8 * scale:
             return
         if begin_area("##timeline", rect):
-            area_header("Timeline", scale)
+            previous_tab = self.bottom_tab
+            self.bottom_tab = tab_strip(BOTTOM_TABS, self.bottom_tab, scale)
+            if self.bottom_tab != previous_tab and BOTTOM_TABS[self.bottom_tab] != "Timeline":
+                # The plots need more room than the transport controls
+                self.layout.timeline_height = max(self.layout.timeline_height, 300.0)
+            psim.Dummy((0.0, 2 * scale))
+
+            match BOTTOM_TABS[self.bottom_tab]:
+                case "Impulse response":
+                    cir_contents(self)
+                    end_area()
+                    return
+                case "Antenna pattern":
+                    if self.selected_object is not None and self.selected_type in (
+                        SelectionType.Transmitter,
+                        SelectionType.Receiver,
+                    ):
+                        pattern_cuts_contents(
+                            self,
+                            self.scene.tx_array
+                            if self.selected_type == SelectionType.Transmitter
+                            else self.scene.rx_array,
+                        )
+                    else:
+                        psim.TextDisabled(
+                            "Select a radio device to see its antenna pattern."
+                        )
+                    end_area()
+                    return
+
             animation_gui(self)
             # Scrub the selected device's trajectory, when it has one
             if self.selected_object is not None and self.selected_type in (
@@ -2980,17 +3044,6 @@ class SionnaRtGui:
             self.workspace_gui()
             if self.cfg.show_help_window:
                 self.gui_help_window()
-            if self.selected_object is not None and self.selected_type in (
-                SelectionType.Transmitter,
-                SelectionType.Receiver,
-            ):
-                pattern_cuts_window(
-                    self,
-                    self.scene.tx_array
-                    if self.selected_type == SelectionType.Transmitter
-                    else self.scene.rx_array,
-                )
-            cir_window(self)
             return
 
         # --- Selection window

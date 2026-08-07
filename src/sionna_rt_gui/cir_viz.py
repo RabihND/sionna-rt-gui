@@ -46,8 +46,8 @@ def _rms_delay_spread(amplitude: np.ndarray, delays: np.ndarray) -> float:
 
 def cir_window(gui: "SionnaRtGui") -> None:
     """
-    Window with the channel impulse response of a selectable TX-RX pair.
-    Shown while `compute_cir` is enabled in the Paths section.
+    The channel impulse response in its own floating window, for the classic
+    layout. Shown while `compute_cir` is enabled in the Paths section.
     """
     if not gui.cfg.paths.compute_cir:
         return
@@ -60,13 +60,30 @@ def cir_window(gui: "SionnaRtGui") -> None:
         gui.cfg.paths.compute_cir = False
         psim.End()
         return
+    cir_contents(gui)
+    psim.End()
+
+
+def cir_contents(gui: "SionnaRtGui") -> None:
+    """
+    Stem plot of the channel impulse response for a selectable TX-RX pair,
+    drawn into the current window.
+    """
+    s = gui.ui_scale
+    if not gui.cfg.paths.compute_cir:
+        psim.TextDisabled(
+            "The channel impulse response is not being computed."
+        )
+        if psim.Button("Compute it##cir_enable"):
+            gui.cfg.paths.compute_cir = True
+            gui.update_paths(show=True)
+        return
 
     if gui.paths_cir is None:
         psim.TextDisabled(
-            "No paths computed yet. Add at least one transmitter and one\n"
-            "receiver, then compute paths (or enable automatic updates)."
+            "No paths yet. Add at least one transmitter and one receiver, "
+            "then compute paths."
         )
-        psim.End()
         return
 
     a, _ = gui.paths_cir
@@ -94,7 +111,6 @@ def cir_window(gui: "SionnaRtGui") -> None:
             f"{tx_names[tx_i] if tx_i < len(tx_names) else tx_i} and "
             f"{rx_names[rx_i] if rx_i < len(rx_names) else rx_i}."
         )
-        psim.End()
         return
 
     power_db = 20.0 * np.log10(amplitude)
@@ -230,4 +246,3 @@ def cir_window(gui: "SionnaRtGui") -> None:
         draw_list.AddCircleFilled((px, py), 3.0 * s, stem_col)
 
     psim.Dummy((avail[0], plot_h + margin_bottom))
-    psim.End()

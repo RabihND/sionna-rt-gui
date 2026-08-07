@@ -249,14 +249,8 @@ def _draw_polar_chart(
     )
 
 
-def pattern_cuts_window(gui: "SionnaRtGui", array: rt.AntennaArray) -> None:
-    """
-    Separate window with the vertical and horizontal polar cuts of the
-    antenna gain, computed once per antenna pattern and drawn every frame.
-    """
-    if not getattr(gui, "show_pattern_cuts", False):
-        return
-
+def _pattern_cuts_cache(gui: "SionnaRtGui", array: rt.AntennaArray) -> dict:
+    """Samples of the two cuts, computed once per antenna pattern."""
     antenna_pattern = array.antenna_pattern
     key = id(antenna_pattern)
     cache = getattr(gui, "pattern_cuts_cache", None)
@@ -273,7 +267,17 @@ def pattern_cuts_window(gui: "SionnaRtGui", array: rt.AntennaArray) -> None:
             "db_floor": db_max - 40.0,
         }
         gui.pattern_cuts_cache = cache
+    return cache
 
+
+def pattern_cuts_window(gui: "SionnaRtGui", array: rt.AntennaArray) -> None:
+    """
+    The polar cuts in their own floating window, for the classic layout.
+    """
+    if not getattr(gui, "show_pattern_cuts", False):
+        return
+
+    cache = _pattern_cuts_cache(gui, array)
     s = gui.ui_scale
     psim.SetNextWindowSize((720 * s, 420 * s), psim.ImGuiCond_FirstUseEver)
     psim.SetNextWindowPos((450 * s, 40 * s), psim.ImGuiCond_FirstUseEver)
@@ -282,7 +286,16 @@ def pattern_cuts_window(gui: "SionnaRtGui", array: rt.AntennaArray) -> None:
         gui.show_pattern_cuts = False
         psim.End()
         return
+    _pattern_cuts_plots(gui, cache, s)
+    psim.End()
 
+
+def pattern_cuts_contents(gui: "SionnaRtGui", array: rt.AntennaArray) -> None:
+    """The same polar cuts, drawn into the current window."""
+    _pattern_cuts_plots(gui, _pattern_cuts_cache(gui, array), gui.ui_scale)
+
+
+def _pattern_cuts_plots(gui: "SionnaRtGui", cache: dict, s: float) -> None:
     psim.TextDisabled(
         "Gain [dB] of a single antenna element (polarization direction 0)."
     )
@@ -320,4 +333,3 @@ def pattern_cuts_window(gui: "SionnaRtGui", array: rt.AntennaArray) -> None:
         cache["db_floor"],
     )
     psim.Dummy((2 * chart + 16 * s, chart))
-    psim.End()
