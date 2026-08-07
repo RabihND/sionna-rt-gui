@@ -234,6 +234,14 @@ class GuiConfig:
     # Logging
     log_level: int = logging.INFO
 
+    # Scene bandwidth, which sets the thermal noise floor (k * T * B)
+    bandwidth_hz: float = 20e6
+    # Receiver noise figure: sionna's noise floor is thermal only, and a real
+    # receiver adds its own noise on top.
+    noise_figure_db: float = 7.0
+    # Transmit power given to newly placed transmitters
+    default_tx_power_dbm: float = 20.0
+
     gui_mode: GuiMode = GuiMode.FULL
     show_polyscope_gui: bool = False
     show_help_window: bool = False

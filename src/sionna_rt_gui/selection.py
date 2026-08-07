@@ -18,7 +18,12 @@ from .animation import trajectory_gui
 from .config import DEFAULT_SLICE_PLANE_NAME
 from .pattern_viz import default_pattern_scale, update_antenna_pattern_structure
 from .ps_utils import ACCENT_BRIGHT
-from .workspace_layout import end_property_row, property_row
+from .workspace_layout import (
+    end_property_row,
+    numeric_field,
+    numeric_field3,
+    property_row,
+)
 from .sionna_utils import set_or_update_radio_devices_polyscope
 
 
@@ -182,8 +187,8 @@ def scene_object_contents(gui: "SionnaRtGui", scene_object: rt.SceneObject) -> N
     psim.Spacing()
     position = scene_object.position.numpy().squeeze()
     property_row("Position [m]", gui.ui_scale)
-    changed, new_position = psim.DragFloat3(
-        "##object_position", tuple(position), 0.25, format="%.2f"
+    changed, new_position = numeric_field3(
+        "##object_position", position, 0.25, "%.2f"
     )
     end_property_row()
     edited_numerically = False
@@ -193,8 +198,8 @@ def scene_object_contents(gui: "SionnaRtGui", scene_object: rt.SceneObject) -> N
 
     orientation_deg = np.degrees(scene_object.orientation.numpy().squeeze())
     property_row("Orientation [deg]", gui.ui_scale)
-    changed, new_orientation = psim.DragFloat3(
-        "##object_orientation", tuple(orientation_deg), 1.0, format="%.1f"
+    changed, new_orientation = numeric_field3(
+        "##object_orientation", orientation_deg, 1.0, "%.1f"
     )
     end_property_row()
     if changed:
@@ -299,8 +304,8 @@ def selection_contents(
             # clipped when the window is narrow.
             position = rd.position.numpy().squeeze()
             property_row("Position [m]", gui.ui_scale)
-            changed, new_position = psim.DragFloat3(
-                "##position", tuple(position), 0.25, format="%.2f"
+            changed, new_position = numeric_field3(
+                "##position", position, 0.25, "%.2f"
             )
             end_property_row()
             if changed:
@@ -310,8 +315,8 @@ def selection_contents(
 
             orientation_deg = np.degrees(rd.orientation.numpy().squeeze())
             property_row("Orientation [deg]", gui.ui_scale)
-            changed, new_orientation = psim.DragFloat3(
-                "##orientation", tuple(orientation_deg), 1.0, format="%.1f"
+            changed, new_orientation = numeric_field3(
+                "##orientation", orientation_deg, 1.0, "%.1f"
             )
             end_property_row()
             if changed:
@@ -322,22 +327,30 @@ def selection_contents(
 
             if is_transmitter:
                 power_dbm = float(rd.power_dbm[0])
+                watts = 10.0 ** (power_dbm / 10.0) / 1000.0
                 property_row("TX power [dBm]", gui.ui_scale)
-                changed, new_power_dbm = psim.SliderFloat(
-                    "##tx_power", power_dbm, -20.0, 60.0, format="%.1f"
+                changed, new_power_dbm = numeric_field(
+                    "##tx_power",
+                    power_dbm,
+                    0.25,
+                    -30.0,
+                    60.0,
+                    "%.1f",
+                    f"{watts:.3g} W",
                 )
                 end_property_row()
                 if changed:
                     rd.power_dbm = new_power_dbm
                     rd_update_needed = True
-                if psim.IsItemHovered():
-                    watts = 10.0 ** (power_dbm / 10.0) / 1000.0
-                    psim.SetTooltip(f"{watts:.3g} W")
 
             velocity = rd.velocity.numpy().squeeze()
             property_row("Velocity [m/s]", gui.ui_scale)
-            changed, new_velocity = psim.DragFloat3(
-                "##velocity", tuple(velocity), 0.1, format="%.2f"
+            changed, new_velocity = numeric_field3(
+                "##velocity",
+                velocity,
+                0.1,
+                "%.2f",
+                "World-space velocity, used for Doppler",
             )
             end_property_row()
             if changed:

@@ -498,6 +498,7 @@ class SionnaRtGui:
                 if scattering_coefficient is not None:
                     bsdf.scattering_coefficient = scattering_coefficient
 
+        self.scene.bandwidth = self.cfg.bandwidth_hz
         self.cfg.scene_filename = scene_path
 
         # Scene statistics shown in the GUI, computed once per scene load
@@ -1082,6 +1083,8 @@ class SionnaRtGui:
             position=position,
             orientation=[0, 0, 0],
         )
+        if is_transmitter:
+            new_rd.power_dbm = self.cfg.default_tx_power_dbm
         self.scene.add(new_rd)
 
         set_or_update_radio_devices_polyscope(

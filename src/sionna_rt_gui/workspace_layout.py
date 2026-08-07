@@ -341,3 +341,51 @@ def property_row(label: str, scale: float, label_fraction: float = 0.42) -> None
 
 def end_property_row() -> None:
     psim.PopItemWidth()
+
+
+def numeric_field(
+    identifier: str,
+    value: float,
+    speed: float,
+    minimum: float,
+    maximum: float,
+    fmt: str = "%.2f",
+    tooltip: str = "",
+) -> tuple[bool, float]:
+    """
+    A draggable number that can also be typed into. Dragging is quick but
+    imprecise, so every one of these advertises that a value can be entered
+    exactly, and typed values are clamped to the range.
+    """
+    changed, new_value = psim.DragFloat(
+        identifier,
+        value,
+        speed,
+        minimum,
+        maximum,
+        fmt,
+        psim.ImGuiSliderFlags_AlwaysClamp,
+    )
+    if psim.IsItemHovered():
+        psim.SetTooltip(
+            (tooltip + "\n" if tooltip else "")
+            + "Drag to adjust, or Ctrl+click to type an exact value"
+        )
+    return changed, new_value
+
+
+def numeric_field3(
+    identifier: str,
+    values,
+    speed: float,
+    fmt: str = "%.2f",
+    tooltip: str = "",
+):
+    """Three draggable numbers that can also be typed into."""
+    changed, new_values = psim.DragFloat3(identifier, tuple(values), speed, 0.0, 0.0, fmt)
+    if psim.IsItemHovered():
+        psim.SetTooltip(
+            (tooltip + "\n" if tooltip else "")
+            + "Drag to adjust, or Ctrl+click a number to type it"
+        )
+    return changed, new_values

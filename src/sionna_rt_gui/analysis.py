@@ -18,7 +18,7 @@ import numpy as np
 import polyscope.imgui as psim
 
 from .ps_utils import ACCENT_BRIGHT
-from .workspace_layout import end_property_row, property_row
+from .workspace_layout import end_property_row, numeric_field, property_row
 
 # Seconds between automatic refreshes of the cached statistics
 REFRESH_INTERVAL_S = 2.0
@@ -110,8 +110,12 @@ def link_budget(gui: "SionnaRtGui", rx_index: int = 0, tx_index: int = 0) -> dic
     )
 
     received_dbm = power_dbm + total_gain_db
-    noise_dbm = 10.0 * np.log10(float(gui.scene.thermal_noise_power[0])) + 30.0
+    thermal_dbm = 10.0 * np.log10(float(gui.scene.thermal_noise_power[0])) + 30.0
+    # A real receiver adds its own noise on top of the thermal floor
+    noise_dbm = thermal_dbm + gui.cfg.noise_figure_db
     result = {
+        "thermal_dbm": thermal_dbm,
+        "noise_figure_db": gui.cfg.noise_figure_db,
         "paths": int(amplitude.size),
         "path_gain_db": total_gain_db,
         "received_dbm": received_dbm,
@@ -176,13 +180,28 @@ def noise_contents(gui: "SionnaRtGui") -> None:
         gui.reset_radio_map()
         refresh_statistics(gui, force=True)
 
-    noise_dbm = 10.0 * np.log10(float(gui.scene.thermal_noise_power[0])) + 30.0
+    property_row("Receiver noise figure [dB]", gui.ui_scale)
+    changed, gui.cfg.noise_figure_db = numeric_field(
+        "##noise_figure", gui.cfg.noise_figure_db, 0.1, 0.0, 20.0, "%.1f"
+    )
+    end_property_row()
+    if psim.IsItemHovered():
+        psim.SetTooltip(
+            "How much noise the receiver adds on top of the thermal floor.\n"
+            "Around 7 dB is typical for a handset, 2-3 dB for a base station."
+        )
+
+    thermal_dbm = 10.0 * np.log10(float(gui.scene.thermal_noise_power[0])) + 30.0
     psim.Spacing()
-    psim.TextColored((*ACCENT_BRIGHT, 1.0), f"Noise floor {noise_dbm:.1f} dBm")
+    psim.TextColored(
+        (*ACCENT_BRIGHT, 1.0),
+        f"Noise floor {thermal_dbm + gui.cfg.noise_figure_db:.1f} dBm",
+    )
     psim.PushTextWrapPos(0.0)
     psim.TextDisabled(
-        "Thermal noise from k * T * B. Received power above this is the SNR, "
-        "and the radio map's SINR is measured against it."
+        f"Thermal k * T * B gives {thermal_dbm:.1f} dBm; the receiver figure adds "
+        f"{gui.cfg.noise_figure_db:.1f} dB. Received power above this is the SNR. "
+        "The radio map's SINR uses the thermal floor only, as sionna computes it."
     )
     psim.PopTextWrapPos()
 
@@ -279,7 +298,9 @@ def link_budget_contents(gui: "SionnaRtGui") -> None:
         f"Received {stats['received_dbm']:.1f} dBm, SNR {stats['snr_db']:.1f} dB",
     )
     psim.TextDisabled(
-        f"Thermal noise floor {stats['noise_dbm']:.1f} dBm"
+        f"Noise floor {stats['noise_dbm']:.1f} dBm "
+        f"({stats['thermal_dbm']:.1f} thermal + {stats['noise_figure_db']:.0f} dB "
+        f"receiver figure)"
     )
     psim.Text(
         f"Path gain {stats['path_gain_db']:.1f} dB "
