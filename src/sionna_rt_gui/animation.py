@@ -180,7 +180,8 @@ def propagate_device_updates(gui: "SionnaRtGui", tx_changed: bool, rx_changed: b
         )
 
     if gui.cfg.paths.auto_update:
-        gui.update_paths(show=True)
+        # Movement: trace cheaply now, at full quality once it settles
+        gui.update_paths(show=True, interactive=True)
 
 
 def restart_trajectories(gui: "SionnaRtGui"):

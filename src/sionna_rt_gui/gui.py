@@ -283,6 +283,10 @@ class SionnaRtGui:
         self._baseline_frame_s: float | None = None
         self.solver_update_delay_s: float = 0.0
         self.solver_delay_max_s: float = 0.12
+        # Samples per source while something is moving, and the settle pass
+        self.interactive_samples_per_src: int = 10_000
+        self._last_interactive_paths: float = 0.0
+        self._settle_paths_pending: bool = False
         self.frame_time_target_s: float = 1.0 / 30.0
         # The simulation only runs once started, and can then be paused
         self.simulation_running: bool = False
@@ -706,6 +710,15 @@ class SionnaRtGui:
 
         self.observe_frame_time(psim.GetIO().DeltaTime)
 
+        # Once movement stops, replace the interactive trace with a full one
+        if (
+            self._settle_paths_pending
+            and time.time() - self._last_interactive_paths > 0.35
+        ):
+            self._settle_paths_pending = False
+            self._last_paths_update_time = 0.0  # bypass the throttle for this one
+            self.update_paths(show=True)
+
         # --- Automatic refinement of the radio map
         if self.simulation_running and self.radio_map is not None:
             if (
@@ -936,7 +949,9 @@ class SionnaRtGui:
 
     # ------------------------
 
-    def update_paths(self, clear_first: bool = False, show: bool = True):
+    def update_paths(
+        self, clear_first: bool = False, show: bool = True, interactive: bool = False
+    ):
         # Throttle path computations: never spend more than a third of the time
         # solving paths, using what the last solve actually cost.
         current_time = time.time()
@@ -951,8 +966,14 @@ class SionnaRtGui:
         if clear_first:
             self.clear_paths()
 
-        self.paths = self.compute_paths()
+        self.paths = self.compute_paths(interactive=interactive)
         self._last_paths_update_time = time.time()
+        if interactive:
+            # Something is moving: trace again at full quality once it settles
+            self._last_interactive_paths = self._last_paths_update_time
+            self._settle_paths_pending = True
+        else:
+            self._settle_paths_pending = False
         if self.paths is None:
             return
 
@@ -977,16 +998,26 @@ class SionnaRtGui:
                 # Set the first element to 1e-10
                 self.paths_taps[0, 0, 0, 0, 0, 0] = 1e-10
 
-    def compute_paths(self) -> rt.Paths | None:
+    def compute_paths(self, interactive: bool = False) -> rt.Paths | None:
         if not self.scene._transmitters or not self.scene._receivers:
             return None
+
+        # While things move, trace with fewer samples. Measurements on the
+        # example scene show the same total path gain either way: the dominant
+        # paths are found deterministically and extra samples only add weak
+        # diffuse ones, so movement can be followed far more closely for it.
+        samples_per_src = self.cfg.paths.samples_per_src
+        if interactive:
+            samples_per_src = max(
+                min(self.interactive_samples_per_src, samples_per_src), 1000
+            )
 
         solver = rt.PathSolver()
         return solver(
             self.scene,
             max_depth=self.cfg.paths.max_depth,
             max_num_paths_per_src=self.cfg.paths.max_num_paths_per_src,
-            samples_per_src=self.cfg.paths.samples_per_src,
+            samples_per_src=samples_per_src,
             synthetic_array=self.cfg.paths.synthetic_array,
             los=self.cfg.paths.los,
             specular_reflection=self.cfg.paths.specular_reflection,
