@@ -14,6 +14,7 @@ from sionna_rt_gui.cameras import (
     PLACEMENT_ORBIT,
     ViewCamera,
     resolved_pose,
+    safe_view,
 )
 
 
@@ -158,8 +159,64 @@ def test_missing_lock_target_leaves_the_target_alone():
     assert np.allclose(target, [3.0, 3.0, 3.0])
 
 
+def test_straight_down_view_is_tilted_just_enough_to_be_valid():
+    # A fly-over asks for an offset that is all height, which looks straight
+    # down: collinear with the up axis, which the viewer rejects
+    camera = ViewCamera(
+        name="c",
+        placement=PLACEMENT_CARRIED,
+        carrier="rx-0",
+        offset=np.array([0.0, 0.0, 120.0]),
+    )
+    gui = FakeGui({"rx-0": np.array([-19.0, -1.0, 13.0])})
+    view = safe_view(*resolved_pose(gui, camera, 0.1))
+    assert view is not None
+    position, target = view
+    delta = target - position
+    # Still essentially overhead, but no longer collinear with the up axis
+    assert position[2] == pytest.approx(133.0)
+    assert np.linalg.norm(delta[:2]) > 1e-3 * abs(delta[2])
+
+
+def test_a_tilted_view_is_left_alone():
+    position, target = safe_view(
+        np.array([10.0, -40.0, 60.0]), np.array([10.0, 0.0, 2.0])
+    )
+    assert np.allclose(position, [10.0, -40.0, 60.0])
+    assert np.allclose(target, [10.0, 0.0, 2.0])
+
+
+def test_a_view_with_nothing_to_look_at_is_refused():
+    assert safe_view(np.zeros(3), np.zeros(3)) is None
+
+
 def test_free_aim_on_a_free_camera_is_not_orbiting():
     camera = ViewCamera(name="c", placement=PLACEMENT_FREE, aim=AIM_FREE)
     before = camera.orbit_angle_deg
     resolved_pose(FakeGui(), camera, 5.0)
     assert camera.orbit_angle_deg == before
+
+
+class FakeScene:
+    def __init__(self, receivers=(), transmitters=(), objects=()):
+        self.receivers = {name: None for name in receivers}
+        self.transmitters = {name: None for name in transmitters}
+        self.objects = {name: None for name in objects}
+
+
+def test_a_carrier_is_filled_in_so_the_setting_does_something():
+    from sionna_rt_gui.cameras import _first_target
+
+    gui = FakeGui()
+    gui.scene = FakeScene(receivers=["rx-0"], transmitters=["tx-0"], objects=["car"])
+    # A receiver is the most likely thing to follow
+    assert _first_target(gui) == "rx-0"
+
+    gui.scene = FakeScene(transmitters=["tx-0"], objects=["car"])
+    assert _first_target(gui) == "tx-0"
+
+    gui.scene = FakeScene(objects=["car"])
+    assert _first_target(gui) == "car"
+
+    gui.scene = FakeScene()
+    assert _first_target(gui) is None

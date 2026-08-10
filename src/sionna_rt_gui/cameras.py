@@ -183,11 +183,38 @@ def resolved_pose(
     return position, target
 
 
+def safe_view(
+    position: np.ndarray, target: np.ndarray
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """
+    The same view, adjusted so the viewer will accept it, or None if there is
+    nothing to look at.
+
+    Looking straight down is collinear with the up axis, which the viewer
+    refuses - and a straight-down view is exactly what a fly-over asks for, with
+    its offset all height and no sideways part. Rather than reject that, the
+    camera is tilted by the smallest amount that keeps the view valid, which is
+    what the top view does too.
+    """
+    position = np.asarray(position, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    delta = target - position
+    if float(np.linalg.norm(delta)) < 1e-6:
+        return None
+
+    horizontal = float(np.linalg.norm(delta[:2]))
+    vertical = abs(float(delta[2]))
+    if horizontal < 1e-3 * max(vertical, 1.0):
+        position = position + np.array([0.0, -0.05 * max(vertical, 1.0), 0.0])
+    return position, target
+
+
 def apply_camera(gui: "SionnaRtGui", camera: ViewCamera, dt: float) -> None:
     """Point the viewer's camera where this one is looking."""
-    position, target = resolved_pose(gui, camera, dt)
-    if np.allclose(position, target, atol=1e-6):
+    view = safe_view(*resolved_pose(gui, camera, dt))
+    if view is None:
         return
+    position, target = view
     ps.look_at(tuple(float(v) for v in position), tuple(float(v) for v in target))
 
 
@@ -229,6 +256,20 @@ def _row(gui: "SionnaRtGui", label: str) -> None:
     property_row(label, gui.ui_scale)
 
 
+def _first_target(gui: "SionnaRtGui") -> str | None:
+    """
+    Something worth following, preferring a receiver.
+
+    Choosing a placement that needs a target and getting no target at all makes
+    the setting look broken, so one is filled in and can then be changed.
+    """
+    for name in list(gui.scene.receivers) + list(gui.scene.transmitters):
+        return name
+    for name in gui.scene.objects:
+        return name
+    return None
+
+
 def camera_contents(gui: "SionnaRtGui", camera: ViewCamera) -> None:
     """Properties of one camera."""
     is_active = gui.active_camera is camera
@@ -252,8 +293,25 @@ def camera_contents(gui: "SionnaRtGui", camera: ViewCamera) -> None:
     psim.Separator()
 
     _row(gui, "Placement")
-    camera.placement = _combo("##placement", PLACEMENTS, camera.placement)
+    placement = _combo("##placement", PLACEMENTS, camera.placement)
     end_property_row()
+    if placement != camera.placement:
+        camera.placement = placement
+        if placement == PLACEMENT_CARRIED and camera.carrier is None:
+            camera.carrier = _first_target(gui)
+        elif placement == PLACEMENT_ORBIT and not camera.orbit_center.any():
+            camera.orbit_center = np.asarray(gui.scene_center(), dtype=np.float64)
+
+    # Following or circling is only visible through the camera
+    if not is_active and (
+        camera.placement != PLACEMENT_FREE or camera.aim == AIM_LOCKED
+    ):
+        psim.PushTextWrapPos(0.0)
+        psim.TextColored(
+            (0.92, 0.55, 0.30, 1.0),
+            "Press Look through to see this: the mouse is still driving the view.",
+        )
+        psim.PopTextWrapPos()
 
     targets = _target_names(gui)
     if camera.placement == PLACEMENT_CARRIED:
@@ -313,8 +371,12 @@ def camera_contents(gui: "SionnaRtGui", camera: ViewCamera) -> None:
         end_property_row()
 
     _row(gui, "Aim")
-    camera.aim = _combo("##aim", AIMS, camera.aim)
+    aim = _combo("##aim", AIMS, camera.aim)
     end_property_row()
+    if aim != camera.aim:
+        camera.aim = aim
+        if aim == AIM_LOCKED and camera.locked_to is None:
+            camera.locked_to = _first_target(gui)
     if camera.aim == AIM_LOCKED:
         _row(gui, "Locked to")
         options = ["(nothing)"] + targets
