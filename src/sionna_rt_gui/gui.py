@@ -2308,11 +2308,16 @@ class SionnaRtGui:
         self.last_export_note = (note, time.time())
 
     def save_screenshot(self) -> None:
-        """Save a PNG of the current view (including the UI) to disk."""
+        """Save a PNG of the 3D view to disk."""
         stamp = time.strftime("%Y%m%d_%H%M%S")
         path = os.path.join(self._export_directory(), f"sionna_rt_{stamp}.png")
-        ps.screenshot(filename=path, transparent_bg=False, include_UI=True)
-        self._set_export_note(f"Saved {path}")
+        # The panels cannot be captured from inside the viewer's own loop, so
+        # this is the rendered view on its own
+        ps.screenshot(filename=path, transparent_bg=False)
+        if os.path.exists(path):
+            self._set_export_note(f"Saved {path}")
+        else:
+            self._set_export_note("The view could not be saved")
 
     def export_radio_map(self) -> None:
         """Save the current radio map (path gain, linear) as a .npy file."""
@@ -2398,7 +2403,7 @@ class SionnaRtGui:
         if psim.Button("Save view"):
             self.save_screenshot()
         if psim.IsItemHovered():
-            psim.SetTooltip("Save a PNG screenshot of the current view")
+            psim.SetTooltip("Save a PNG of the 3D view")
         psim.SameLine()
         if psim.Button("?", size=(bw, 0)):
             self.cfg.show_help_window = not self.cfg.show_help_window
@@ -3232,7 +3237,7 @@ class SionnaRtGui:
             if psim.Button(f"{labels[0]}##topbar"):
                 self.save_screenshot()
             if psim.IsItemHovered():
-                psim.SetTooltip("Save a PNG screenshot of the current view")
+                psim.SetTooltip("Save a PNG of the 3D view")
             psim.SameLine()
             if psim.Button(f"{labels[1]}##topbar"):
                 self.cfg.show_help_window = not self.cfg.show_help_window
