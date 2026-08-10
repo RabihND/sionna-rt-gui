@@ -52,6 +52,10 @@ AIM_FREE = "Free"
 AIM_LOCKED = "Locked to object"
 AIMS = [AIM_FREE, AIM_LOCKED]
 
+# Coordinates are typed in by hand, so they are held to something a view can
+# still be built from, well beyond any real scene
+MAX_COORDINATE = 1e7
+
 
 @dataclass
 class ViewCamera:
@@ -198,6 +202,13 @@ def safe_view(
     """
     position = np.asarray(position, dtype=np.float64)
     target = np.asarray(target, dtype=np.float64)
+    # A typed-in number can be anything at all, and a view built from something
+    # that is not a finite coordinate is not worth handing to the viewer
+    if not (np.all(np.isfinite(position)) and np.all(np.isfinite(target))):
+        return None
+    position = np.clip(position, -MAX_COORDINATE, MAX_COORDINATE)
+    target = np.clip(target, -MAX_COORDINATE, MAX_COORDINATE)
+
     delta = target - position
     if float(np.linalg.norm(delta)) < 1e-6:
         return None
@@ -218,6 +229,20 @@ def apply_camera(gui: "SionnaRtGui", camera: ViewCamera, dt: float) -> None:
     ps.look_at(tuple(float(v) for v in position), tuple(float(v) for v in target))
 
 
+def mouse_is_moving_the_view() -> bool:
+    """Whether the user is dragging or zooming in the viewport this frame."""
+    io = psim.GetIO()
+    if io.WantCaptureMouse:
+        # A panel has the mouse, so this is not a view movement
+        return False
+    return (
+        psim.IsMouseDragging(0)
+        or psim.IsMouseDragging(1)
+        or psim.IsMouseDragging(2)
+        or abs(io.MouseWheel) > 0.0
+    )
+
+
 def update_active_camera(gui: "SionnaRtGui") -> None:
     """Drive the view from the active camera, once per frame."""
     camera = gui.active_camera
@@ -228,10 +253,13 @@ def update_active_camera(gui: "SionnaRtGui") -> None:
     gui._camera_drive_time = now
     # A free, unlocked camera has nothing to say after it is activated: leaving
     # it alone keeps the mouse working
-    if (
-        camera.placement == PLACEMENT_FREE
-        and camera.aim == AIM_FREE
-    ):
+    if camera.placement == PLACEMENT_FREE and camera.aim == AIM_FREE:
+        return
+    # Reaching for the mouse is a clear request to look somewhere else. Without
+    # this the view is overwritten every frame and the mouse appears broken
+    # until the button that hands it back is found.
+    if mouse_is_moving_the_view():
+        gui.active_camera = None
         return
     apply_camera(gui, camera, dt)
 
@@ -273,8 +301,20 @@ def _first_target(gui: "SionnaRtGui") -> str | None:
 def camera_contents(gui: "SionnaRtGui", camera: ViewCamera) -> None:
     """Properties of one camera."""
     is_active = gui.active_camera is camera
-    if is_active:
+    # A free camera has nothing to say once the view is on it, so saying it
+    # drives the view would be a promise the mouse immediately breaks
+    holds_the_view = (
+        is_active
+        and camera.placement != PLACEMENT_FREE
+        or (is_active and camera.aim == AIM_LOCKED)
+    )
+    if holds_the_view:
         psim.TextColored((*ACCENT_BRIGHT, 1.0), f"{camera.name} is driving the view")
+        psim.TextDisabled("moving the mouse in the view takes it back")
+    elif is_active:
+        psim.TextColored(
+            (*ACCENT_BRIGHT, 1.0), f"the view is on {camera.name}, and free to move"
+        )
     else:
         psim.TextDisabled(f"{camera.name} is not driving the view")
 

@@ -220,3 +220,18 @@ def test_a_carrier_is_filled_in_so_the_setting_does_something():
 
     gui.scene = FakeScene()
     assert _first_target(gui) is None
+
+
+def test_a_view_built_from_nonsense_numbers_is_refused():
+    assert safe_view(np.array([np.nan, 0.0, 10.0]), np.zeros(3)) is None
+    assert safe_view(np.array([np.inf, 0.0, 10.0]), np.zeros(3)) is None
+    assert safe_view(np.zeros(3), np.array([0.0, np.nan, 0.0])) is None
+
+
+def test_absurd_coordinates_are_held_to_something_a_view_can_use():
+    from sionna_rt_gui.cameras import MAX_COORDINATE
+
+    view = safe_view(np.array([1e30, 0.0, 1e30]), np.zeros(3))
+    assert view is not None
+    position, _ = view
+    assert np.all(np.abs(position) <= MAX_COORDINATE)
