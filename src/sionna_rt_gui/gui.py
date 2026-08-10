@@ -297,6 +297,8 @@ class SionnaRtGui:
         self._visual_params = None
         self._visual_params_of = None
         self._visual_vertex_keys: dict[str, str] = {}
+        # Until when the view counts as moving, for interactive render quality
+        self._camera_moving_until: float = 0.0
         # Sizes of the docked areas (see workspace_layout.py)
         self.layout: AreaLayout = AreaLayout()
         # Index of the visible properties tab, and of the bottom editor
@@ -480,7 +482,8 @@ class SionnaRtGui:
         traj.add_point(p + [40, 0, 0])
         traj.enabled = True
         traj.distance = 0.0  # Start at the first point
-        self.animation_config.speed_multiplier = 10.0
+        # Fast enough to see the link change, slow enough to follow
+        self.animation_config.speed_multiplier = 5.0
         # The scenario is only set up here: computing and animating waits for
         # the user to press Start.
         self.animation_config.playing = False
@@ -710,30 +713,29 @@ class SionnaRtGui:
             ):
                 # TODO: we could potentially skip rendering depth in subsequent frames,
                 #       since we only accumulate RGB.
+                spp, denoise = self.interactive_render_quality(camera_changed)
                 new_img, aovs, self.render_cache = render_scene(
                     self.cfg.rendering,
                     self.scene,
                     seed=self.frame_i,
                     camera_changed=camera_changed,
                     cache=self.render_cache,
-                    use_denoiser=self.denoiser is not None,
+                    use_denoiser=denoise,
+                    spp=spp,
                 )
                 if self.ray_traced_img is None:
                     self.ray_traced_img = new_img
                     self.ray_traced_depth = aovs[0]
                 else:
-                    t = self.cfg.rendering.spp_per_frame / (
-                        self.rendering_accumulated_samples
-                        + self.cfg.rendering.spp_per_frame
-                    )
+                    t = spp / (self.rendering_accumulated_samples + spp)
                     t = dr.opaque(mi.Float32, t)
                     self.ray_traced_img = (1 - t) * self.ray_traced_img + t * new_img
                     # Keep using 1spp depth, it looks better than accumulating.
                     self.ray_traced_depth = aovs[0]
 
-                self.rendering_accumulated_samples += self.cfg.rendering.spp_per_frame
+                self.rendering_accumulated_samples += spp
 
-                if self.denoiser is not None:
+                if denoise:
                     to_sensor = self.render_cache["sensor"].world_transform().inverse()
                     self.ray_traced_img = self.denoiser(
                         self.ray_traced_img,
@@ -808,6 +810,24 @@ class SionnaRtGui:
 
         # Hide Polyscope-side meshes if we are ray tracing.
         self.ps_groups["scene"].set_enabled(not is_ray_tracing)
+
+    def interactive_render_quality(self, camera_changed: bool) -> tuple[int, bool]:
+        """
+        Samples and denoising for this frame: less of both while the view is
+        moving, everything the config asks for once it holds still.
+
+        A frame drawn during a camera move is replaced by the next one before it
+        can be studied, so its samples and its denoising pass only cost frame
+        rate; the denoiser alone is around half of the frame at this resolution.
+        Accumulation restarts when the view settles, so the still image is
+        exactly what it was before.
+        """
+        configured = max(int(self.cfg.rendering.spp_per_frame), 1)
+        if camera_changed:
+            self._camera_moving_until = time.time() + 0.2
+        if time.time() < self._camera_moving_until:
+            return max(configured // 4, 1), False
+        return configured, self.denoiser is not None
 
     def set_use_denoiser(self, use_denoiser: bool):
         self.cfg.rendering.use_denoiser = use_denoiser

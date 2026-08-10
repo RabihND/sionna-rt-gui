@@ -135,6 +135,7 @@ def _render_scene(
     camera_changed: bool,
     cache: dict[str, Any],
     use_denoiser: bool = False,
+    spp: int | None = None,
 ) -> tuple[mi.TensorXf, list[mi.TensorXf], dict[str, Any]]:
     """
     Note that even though this function does RGB rendering, we do *not*
@@ -201,7 +202,7 @@ def _render_scene(
         params=None,
         integrator=integrator,
         seed=(seed, None),
-        spp=(cfg.spp_per_frame, None),
+        spp=(cfg.spp_per_frame if spp is None else spp, None),
     )
     rgb = img[..., :3]
 
@@ -239,7 +240,12 @@ def render_scene(
     camera_changed: bool,
     cache: dict[str, Any] = None,
     use_denoiser: bool = False,
+    spp: int | None = None,
 ) -> tuple[mi.TensorXf, mi.TensorXf, dict[str, Any]]:
+    """
+    Render one frame. `spp` overrides the configured samples per frame, which is
+    how the caller buys frame rate back while the view is moving.
+    """
     assert cfg.mode == RenderingMode.RAY_TRACING
 
     if cache is None:
@@ -248,7 +254,7 @@ def render_scene(
         camera_changed = True
 
     return _render_scene(
-        cfg, seed, camera_changed, cache=cache, use_denoiser=use_denoiser
+        cfg, seed, camera_changed, cache=cache, use_denoiser=use_denoiser, spp=spp
     )
 
 
