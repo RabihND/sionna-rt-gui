@@ -34,6 +34,12 @@ from .animation import (
     restart_trajectories,
 )
 from .antenna_array import antenna_array_gui
+from .cameras import (
+    add_camera,
+    camera_contents,
+    cameras_contents,
+    update_active_camera,
+)
 from .assets import (
     ASSET_LIBRARY,
     AssetSpec,
@@ -297,8 +303,11 @@ class SionnaRtGui:
         self._visual_params = None
         self._visual_params_of = None
         self._visual_vertex_keys: dict[str, str] = {}
-        # Until when the view counts as moving, for interactive render quality
-        self._camera_moving_until: float = 0.0
+        # Named cameras (see cameras.py), and which one drives the view
+        self.cameras: list = []
+        self.active_camera = None
+        self.selected_camera = None
+        self._camera_drive_time: float = 0.0
         # Sizes of the docked areas (see workspace_layout.py)
         self.layout: AreaLayout = AreaLayout()
         # Index of the visible properties tab, and of the bottom editor
@@ -618,6 +627,17 @@ class SionnaRtGui:
         else:
             self.fit_camera_to_scene()
 
+    def scene_center(self) -> np.ndarray:
+        """Middle of the scene's bounding box."""
+        return np.array(self.scene.mi_scene.bbox().center(), dtype=np.float64)
+
+    def select_camera(self, camera) -> None:
+        """Show a camera in the properties area."""
+        self.selected_camera = camera
+        self.selected_object = None
+        self.selected_type = None
+        self.properties_tab = PROPERTIES_TABS.index("Object")
+
     def move_camera_top(self):
         """Bird's-eye view: look straight down at the scene from above."""
         fov_vertical_deg = ps.get_view_camera_parameters().get_fov_vertical_deg()
@@ -683,6 +703,13 @@ class SionnaRtGui:
                 print(f'[!] Failed loading scene "{self.load_scene_requested}":\n{e}')
             self.load_scene_requested = None
 
+        # There is always a view, so there is always a camera holding it. The
+        # first one is made here rather than at construction, where the viewer's
+        # own camera is not ready to be read yet.
+        if not self.cameras:
+            add_camera(self)
+        # A camera that follows or circles something moves the view itself
+        update_active_camera(self)
         self.process_inputs()
 
         # --- Resolution changes
@@ -713,29 +740,30 @@ class SionnaRtGui:
             ):
                 # TODO: we could potentially skip rendering depth in subsequent frames,
                 #       since we only accumulate RGB.
-                spp, denoise = self.interactive_render_quality(camera_changed)
                 new_img, aovs, self.render_cache = render_scene(
                     self.cfg.rendering,
                     self.scene,
                     seed=self.frame_i,
                     camera_changed=camera_changed,
                     cache=self.render_cache,
-                    use_denoiser=denoise,
-                    spp=spp,
+                    use_denoiser=self.denoiser is not None,
                 )
                 if self.ray_traced_img is None:
                     self.ray_traced_img = new_img
                     self.ray_traced_depth = aovs[0]
                 else:
-                    t = spp / (self.rendering_accumulated_samples + spp)
+                    t = self.cfg.rendering.spp_per_frame / (
+                        self.rendering_accumulated_samples
+                        + self.cfg.rendering.spp_per_frame
+                    )
                     t = dr.opaque(mi.Float32, t)
                     self.ray_traced_img = (1 - t) * self.ray_traced_img + t * new_img
                     # Keep using 1spp depth, it looks better than accumulating.
                     self.ray_traced_depth = aovs[0]
 
-                self.rendering_accumulated_samples += spp
+                self.rendering_accumulated_samples += self.cfg.rendering.spp_per_frame
 
-                if denoise:
+                if self.denoiser is not None:
                     to_sensor = self.render_cache["sensor"].world_transform().inverse()
                     self.ray_traced_img = self.denoiser(
                         self.ray_traced_img,
@@ -810,24 +838,6 @@ class SionnaRtGui:
 
         # Hide Polyscope-side meshes if we are ray tracing.
         self.ps_groups["scene"].set_enabled(not is_ray_tracing)
-
-    def interactive_render_quality(self, camera_changed: bool) -> tuple[int, bool]:
-        """
-        Samples and denoising for this frame: less of both while the view is
-        moving, everything the config asks for once it holds still.
-
-        A frame drawn during a camera move is replaced by the next one before it
-        can be studied, so its samples and its denoising pass only cost frame
-        rate; the denoiser alone is around half of the frame at this resolution.
-        Accumulation restarts when the view settles, so the still image is
-        exactly what it was before.
-        """
-        configured = max(int(self.cfg.rendering.spp_per_frame), 1)
-        if camera_changed:
-            self._camera_moving_until = time.time() + 0.2
-        if time.time() < self._camera_moving_until:
-            return max(configured // 4, 1), False
-        return configured, self.denoiser is not None
 
     def set_use_denoiser(self, use_denoiser: bool):
         self.cfg.rendering.use_denoiser = use_denoiser
@@ -945,6 +955,28 @@ class SionnaRtGui:
             diffraction_lit_region=self.cfg.radio_map.diffraction_lit_region,
         )
 
+    # How long the path solver may be kept waiting while devices are moving.
+    # Long enough to leave the renderer some room, short enough that the paths
+    # still read as attached to the device.
+    MOVING_SOLVER_DELAY_S = 0.04
+
+    def solver_delay_ceiling(self) -> float:
+        """
+        The longest the path solver may be made to wait this frame.
+
+        While devices move, the paths are what is being watched: making them
+        wait shows up as the paths trailing behind the device, not as a smoother
+        view. When the scene is still there is nothing to trail, and the delay
+        only paces a radio map refining in the background, so the configured
+        maximum applies.
+        """
+        moving = self.animation_config.playing or (
+            time.time() - self._last_interactive_paths < 0.5
+        )
+        if moving:
+            return min(self.solver_delay_max_s, self.MOVING_SOLVER_DELAY_S)
+        return self.solver_delay_max_s
+
     def observe_frame_time(self, frame_time_s: float) -> None:
         """
         Steer how much solver work each frame takes, from the frame time itself.
@@ -980,9 +1012,11 @@ class SionnaRtGui:
                 min(max(self._rm_refine_samples * 0.6, floor), ceiling)
             )
             # Paths are a live link between devices, so a long wait reads as
-            # lag rather than smoothness: never wait longer than the user allows.
+            # lag rather than smoothness: never wait longer than allowed for
+            # what is being watched.
             self.solver_update_delay_s = min(
-                max(self.solver_update_delay_s * 1.5, 0.03), self.solver_delay_max_s
+                max(self.solver_update_delay_s * 1.5, 0.03),
+                self.solver_delay_ceiling(),
             )
         elif frame_time_s < 0.85 * target:
             # Creep back up
@@ -2291,6 +2325,7 @@ class SionnaRtGui:
         propagate_device_updates(self, tx_changed, rx_changed)
 
     def select_radio_device(self, device, selection_type) -> None:
+        self.selected_camera = None
         """Make a radio device the active object."""
         self.clear_selection()
         self.selected_object = device
@@ -2298,6 +2333,7 @@ class SionnaRtGui:
         self.properties_tab = PROPERTIES_TABS.index("Object")
 
     def select_scene_object(self, object_name: str) -> None:
+        self.selected_camera = None
         """Make a scene object (a building, a placed asset, ...) the active one."""
         scene_object = self.scene.get(object_name)
         if scene_object is None:
@@ -2985,6 +3021,12 @@ class SionnaRtGui:
             animation_gui(self)
             psim.Spacing()
 
+    def section_cameras(self) -> None:
+        if psim.CollapsingHeader("Cameras", psim.ImGuiTreeNodeFlags_DefaultOpen):
+            psim.Spacing()
+            cameras_contents(self)
+            psim.Spacing()
+
     def section_rendering(self) -> None:
         if psim.CollapsingHeader("Rendering"):
             psim.Spacing()
@@ -3371,6 +3413,7 @@ class SionnaRtGui:
                     )
                     psim.SameLine()
                     if psim.Selectable(name, self.selected_object is rd):
+                        self.selected_camera = None
                         self.selected_object = rd
                         self.selected_type = (
                             SelectionType.Transmitter
@@ -3392,6 +3435,20 @@ class SionnaRtGui:
 
             psim.Dummy((0.0, 4 * scale))
             psim.Separator()
+
+            # Cameras are the app's own, not viewer structures, so they are
+            # listed here rather than with the groups below
+            if psim.TreeNodeEx(f"Cameras ({len(self.cameras)})##outliner_cameras"):
+                for camera in list(self.cameras):
+                    psim.PushID(f"outliner_camera_{camera.name}")
+                    label = camera.name + (
+                        "  (driving)" if self.active_camera is camera else ""
+                    )
+                    if psim.Selectable(label, self.selected_camera is camera):
+                        self.select_camera(camera)
+                    psim.PopID()
+                psim.TreePop()
+
             for label, key in (
                 ("Scene meshes", "scene"),
                 ("Radio maps", "radio_maps"),
@@ -3480,7 +3537,12 @@ class SionnaRtGui:
             psim.Dummy((0.0, 2 * scale))
             match PROPERTIES_TABS[self.properties_tab]:
                 case "Object":
-                    selection_contents(self, self.selected_object, self.selected_type)
+                    if self.selected_camera is not None:
+                        camera_contents(self, self.selected_camera)
+                    else:
+                        selection_contents(
+                            self, self.selected_object, self.selected_type
+                        )
                 case "Devices":
                     self.section_devices()
                 case "Radio map":
@@ -3507,6 +3569,7 @@ class SionnaRtGui:
                     # The scene picker and camera presets live in the top bar
                     self.section_scene(include_picker=False, include_camera=False)
                 case "Render":
+                    self.section_cameras()
                     self.section_rendering()
         end_area()
 
