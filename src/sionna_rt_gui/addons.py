@@ -30,6 +30,7 @@ import importlib.util
 import os
 import queue
 import re
+import shutil
 import sys
 import threading
 import time
@@ -157,6 +158,9 @@ class AddonManager:
         self._notifications: list[tuple[str, float]] = []
         self._notifications_lock = threading.Lock()
         self._install_zip_path: str = ""
+        # Floating manager window, toggled e.g. from a toolbar button.
+        self.show_manager_window: bool = False
+        self._uninstall_target: str | None = None
 
         self._load_persisted_state()
         self.refresh()
@@ -436,6 +440,8 @@ class AddonManager:
 
         if self.gui.cfg.gui_mode != GuiMode.HIDDEN:
             self._draw_panels()
+            if self.show_manager_window:
+                self._draw_manager_window()
             self._draw_notifications()
 
     def _draw_panels(self) -> None:
@@ -497,7 +503,47 @@ class AddonManager:
             psim.Text(message)
         psim.End()
 
-    # --- Manager GUI (drawn inside the main window)
+    # --- Uninstall (user addons only)
+
+    def uninstall(self, name: str) -> None:
+        addon = self.addons.get(name)
+        if addon is None or addon.source != "user" or addon.path is None:
+            return
+        path = os.path.realpath(addon.path)
+        if os.path.dirname(path) != os.path.realpath(USER_ADDONS_DIR):
+            self.notify(f"Refusing to uninstall '{name}': unexpected path {path}")
+            return
+        self.set_enabled(name, False, persist=False)
+        if addon.module is not None:
+            sys.modules.pop(addon.module.__name__, None)
+        try:
+            shutil.rmtree(path)
+        except OSError as e:
+            traceback.print_exc()
+            self.notify(f"Failed to uninstall addon '{name}': {e}")
+            return
+        self._cfg_enabled().pop(name, None)
+        self._save_persisted_state()
+        self.refresh()
+        self.notify(f"Uninstalled addon '{name}'.")
+
+    # --- Manager GUI
+
+    def _draw_manager_window(self) -> None:
+        ui_scale = self.gui.ui_scale
+        window_resolution = ps.get_window_size()
+        psim.SetNextWindowSize(
+            (540 * ui_scale, 380 * ui_scale), psim.ImGuiCond_FirstUseEver
+        )
+        psim.SetNextWindowPos(
+            (0.5 * (window_resolution[0] - 540 * ui_scale), 60 * ui_scale),
+            psim.ImGuiCond_FirstUseEver,
+        )
+        _, self.show_manager_window = psim.Begin("Addons##addon_manager", open=True)
+        try:
+            self.draw_manager_gui()
+        finally:
+            psim.End()
 
     def draw_manager_gui(self) -> None:
         psim.Spacing()
@@ -521,6 +567,12 @@ class AddonManager:
                 if psim.Button(f"Reload##addon_reload_{name}"):
                     self.reload_addon(name)
 
+            if addon.source == "user":
+                psim.SameLine()
+                if psim.Button(f"Uninstall##addon_uninstall_{name}"):
+                    self._uninstall_target = name
+                    psim.OpenPopup("Uninstall addon?##addons")
+
             description = addon.info.get("description")
             if description:
                 psim.PushStyleColor(psim.ImGuiCol_Text, (0.6, 0.6, 0.6, 1.0))
@@ -542,5 +594,26 @@ class AddonManager:
         psim.PushStyleColor(psim.ImGuiCol_Text, (0.6, 0.6, 0.6, 1.0))
         psim.Text(f"Addons are installed to {USER_ADDONS_DIR}")
         psim.PopStyleColor()
+
+        # Uninstall confirmation dialog
+        result = psim.BeginPopupModal(
+            "Uninstall addon?##addons",
+            True,
+            psim.ImGuiWindowFlags_AlwaysAutoResize,
+        )
+        if result[0] if isinstance(result, tuple) else result:
+            psim.Text(
+                f"Permanently delete addon '{self._uninstall_target}' from disk?"
+            )
+            psim.Spacing()
+            if psim.Button("Uninstall##addon_uninstall_confirm"):
+                self.uninstall(self._uninstall_target)
+                self._uninstall_target = None
+                psim.CloseCurrentPopup()
+            psim.SameLine()
+            if psim.Button("Cancel##addon_uninstall_cancel"):
+                self._uninstall_target = None
+                psim.CloseCurrentPopup()
+            psim.EndPopup()
 
         psim.Spacing()
