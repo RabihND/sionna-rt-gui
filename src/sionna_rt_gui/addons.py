@@ -161,6 +161,11 @@ class AddonManager:
         # Floating manager window, toggled e.g. from a toolbar button.
         self.show_manager_window: bool = False
         self._uninstall_target: str | None = None
+        # Disables/uninstalls requested from the GUI are deferred to the start
+        # of the next tick: an addon's unregister() may free GPU resources
+        # (textures, buffers) that the current ImGui frame already references,
+        # and freeing them mid-frame crashes the renderer.
+        self._pending_actions: list[tuple[str, str]] = []
 
         self._load_persisted_state()
         self.refresh()
@@ -424,6 +429,20 @@ class AddonManager:
 
     def tick(self) -> None:
         """Called once per frame from the application's tick()."""
+        # Deferred disables/uninstalls, before anything is drawn this frame.
+        for action, name in self._pending_actions:
+            if name not in self.addons:
+                continue
+            if action == "disable":
+                self.set_enabled(name, False)
+            elif action == "disable_session":
+                # Closing a panel window only disables for this session; the
+                # addon comes back on the next start.
+                self.set_enabled(name, False, persist=False)
+            elif action == "uninstall":
+                self.uninstall(name)
+        self._pending_actions.clear()
+
         # Deliver completed background tasks on the main thread.
         while True:
             try:
@@ -462,8 +481,9 @@ class AddonManager:
             finally:
                 psim.End()
             if not keep_open:
-                # Closing the panel window disables the addon.
-                self.set_enabled(addon.name, False)
+                # Closing the panel window disables the addon (deferred to the
+                # next frame, see _pending_actions).
+                self._pending_actions.append(("disable_session", addon.name))
                 self.notify(
                     f"Addon '{addon.name}' disabled. It can be re-enabled in "
                     'the "Addons" section.'
@@ -560,7 +580,10 @@ class AddonManager:
                 addon.enabled,
             )
             if changed:
-                self.set_enabled(name, enabled)
+                if enabled:
+                    self.set_enabled(name, True)
+                else:
+                    self._pending_actions.append(("disable", name))
 
             if addon.path is not None and addon.module is not None:
                 psim.SameLine()
@@ -607,7 +630,7 @@ class AddonManager:
             )
             psim.Spacing()
             if psim.Button("Uninstall##addon_uninstall_confirm"):
-                self.uninstall(self._uninstall_target)
+                self._pending_actions.append(("uninstall", self._uninstall_target))
                 self._uninstall_target = None
                 psim.CloseCurrentPopup()
             psim.SameLine()
