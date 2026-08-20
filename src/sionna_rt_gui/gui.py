@@ -24,6 +24,7 @@ from .file_menu import (
     file_menu_gui,
     load_recent_scenes,
 )
+from .geo_ref import load_geo_sidecar
 from .analysis import (
     coverage_contents,
     phy_link_contents,
@@ -211,6 +212,9 @@ class SionnaRtGui:
         self.current_scene_idx: int = 0
         self.load_scene_requested: str | None = None
         self.scene: rt.Scene | None = None
+
+        # Geo-reference of the current scene (BBOX.json sidecar), if any.
+        self.scene_geo: dict | None = None
 
         # File menu: recently opened scenes (persisted) and the file browser.
         # Built-in scene paths are excluded from the recent list.
@@ -568,6 +572,8 @@ class SionnaRtGui:
 
         if scene_path not in self._builtin_scene_paths and os.path.isfile(scene_path):
             self.recent_scenes = add_recent_scene(scene_path, self.recent_scenes)
+
+        self.scene_geo = load_geo_sidecar(scene_path) if scene_path else None
 
         # Scene statistics shown in the GUI, computed once per scene load
         shapes = self.scene.mi_scene.shapes()

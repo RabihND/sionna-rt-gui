@@ -16,6 +16,7 @@ from sionna.rt.utils.geometry import rotation_matrix
 
 from .animation import trajectory_gui
 from .config import DEFAULT_SLICE_PLANE_NAME
+from .geo_ref import enu_to_gps
 from .pattern_viz import default_pattern_scale, update_antenna_pattern_structure
 from .ps_utils import ACCENT_BRIGHT
 from .workspace_layout import (
@@ -36,6 +37,20 @@ class SelectionType(Enum):
 
 
 GIZMO_SCALE = 40
+
+
+def gps_property_row(gui, position) -> None:
+    """Show the position as GPS coordinates when the scene is geo-referenced
+    (a BBOX.json sidecar next to the scene file, see geo_ref.py)."""
+    origin = getattr(gui, "scene_geo", None)
+    if origin is None:
+        return
+    lat, lon, alt = enu_to_gps(
+        origin, float(position[0]), float(position[1]), float(position[2])
+    )
+    property_row("GPS", gui.ui_scale)
+    psim.Text(f"{lat:.6f}, {lon:.6f} | {alt:.1f} m ASL")
+    end_property_row()
 
 
 def vec_str(vec: np.ndarray) -> str:
@@ -191,6 +206,7 @@ def scene_object_contents(gui: "SionnaRtGui", scene_object: rt.SceneObject) -> N
         "##object_position", position, 0.25, "%.2f"
     )
     end_property_row()
+    gps_property_row(gui, position)
     edited_numerically = False
     if changed:
         gui.set_object_position(scene_object, new_position)
@@ -308,6 +324,7 @@ def selection_contents(
                 "##position", position, 0.25, "%.2f"
             )
             end_property_row()
+            gps_property_row(gui, position)
             if changed:
                 rd.position = mi.Point3f(*new_position)
                 dr.make_opaque(rd.position)
