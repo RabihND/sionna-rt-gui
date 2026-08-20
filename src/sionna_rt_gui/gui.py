@@ -18,6 +18,12 @@ from sionna.rt.scene_utils import remove_objects_duplicate_vertices
 
 from . import __version__ as GUI_VERSION
 from .addons import AddonManager
+from .file_menu import (
+    FileBrowser,
+    add_recent_scene,
+    file_menu_gui,
+    load_recent_scenes,
+)
 from .analysis import (
     coverage_contents,
     phy_link_contents,
@@ -205,6 +211,12 @@ class SionnaRtGui:
         self.current_scene_idx: int = 0
         self.load_scene_requested: str | None = None
         self.scene: rt.Scene | None = None
+
+        # File menu: recently opened scenes (persisted) and the file browser.
+        # Built-in scene paths are excluded from the recent list.
+        self._builtin_scene_paths = set(built_in_scenes.values())
+        self.recent_scenes: list[str] = load_recent_scenes()
+        self.file_browser = FileBrowser()
 
         # Radio map results
         self.radio_map: rt.RadioMap | None = None
@@ -553,6 +565,9 @@ class SionnaRtGui:
 
         self.scene.bandwidth = self.cfg.bandwidth_hz
         self.cfg.scene_filename = scene_path
+
+        if scene_path not in self._builtin_scene_paths and os.path.isfile(scene_path):
+            self.recent_scenes = add_recent_scene(scene_path, self.recent_scenes)
 
         # Scene statistics shown in the GUI, computed once per scene load
         shapes = self.scene.mi_scene.shapes()
@@ -3257,6 +3272,9 @@ class SionnaRtGui:
             psim.TextDisabled("|")
             psim.SameLine()
 
+            file_menu_gui(self)
+            psim.SameLine()
+
             psim.PushItemWidth(190 * scale)
             changed, combo_i = psim.Combo(
                 "##topbar_scene", self.current_scene_idx, self.known_scene_names
@@ -3288,7 +3306,7 @@ class SionnaRtGui:
 
             # Right-aligned actions, sized from their actual labels so the
             # last one is never clipped
-            labels = ["Save view", "?"]
+            labels = ["Addons", "Save view", "?"]
             style = psim.GetStyle()
             widths = [
                 psim.CalcTextSize(label)[0] + 2 * style.FramePadding[0]
@@ -3306,11 +3324,16 @@ class SionnaRtGui:
                 )
             )
             if psim.Button(f"{labels[0]}##topbar"):
+                self.addons.show_manager_window = not self.addons.show_manager_window
+            if psim.IsItemHovered():
+                psim.SetTooltip("Manage addons: enable, install, reload")
+            psim.SameLine()
+            if psim.Button(f"{labels[1]}##topbar"):
                 self.save_screenshot()
             if psim.IsItemHovered():
                 psim.SetTooltip("Save a PNG of the 3D view")
             psim.SameLine()
-            if psim.Button(f"{labels[1]}##topbar"):
+            if psim.Button(f"{labels[2]}##topbar"):
                 self.cfg.show_help_window = not self.cfg.show_help_window
             if psim.IsItemHovered():
                 psim.SetTooltip("Controls & shortcuts (H)")
