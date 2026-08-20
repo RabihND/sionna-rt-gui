@@ -215,6 +215,18 @@ class RenderingConfig:
 # ------------------------
 
 
+@dataclass(kw_only=True)
+class AddonsConfig:
+    # Whether each discovered addon is enabled, by addon name. Addons that are
+    # not listed here are enabled by default. Choices made in the GUI are
+    # persisted to ~/.sionna-rt-gui/addons.yaml; values set here take
+    # precedence over the persisted ones.
+    enabled: dict[str, bool] = field(default_factory=dict)
+
+
+# ------------------------
+
+
 class GuiMode(Enum):
     HIDDEN = 0
     FULL = 1
@@ -276,6 +288,9 @@ class GuiConfig:
 
     # Paths
     paths: PathsConfig = field(default_factory=PathsConfig)
+
+    # Addons
+    addons: AddonsConfig = field(default_factory=AddonsConfig)
 
     def __post_init__(self):
         if self.scene_filename is None:

@@ -17,6 +17,7 @@ from sionna import rt
 from sionna.rt.scene_utils import remove_objects_duplicate_vertices
 
 from . import __version__ as GUI_VERSION
+from .addons import AddonManager
 from .analysis import (
     coverage_contents,
     phy_link_contents,
@@ -446,6 +447,9 @@ class SionnaRtGui:
                 set_camera=not was_initialized, add_radio_map=False
             )
 
+        # --- Addons
+        self.addons = AddonManager(self)
+
     def create_example_scenario(
         self, set_camera: bool = True, add_radio_map: bool = True
     ):
@@ -821,6 +825,7 @@ class SionnaRtGui:
 
         # --- GUI
         self.gui()
+        self.addons.tick()
         self.frame_i += 1
         self.previous_camera_pose = ps.get_camera_view_matrix()
 
@@ -3021,6 +3026,10 @@ class SionnaRtGui:
             animation_gui(self)
             psim.Spacing()
 
+    def section_addons(self) -> None:
+        if psim.CollapsingHeader("Addons"):
+            self.addons.draw_manager_gui()
+
     def section_cameras(self) -> None:
         if psim.CollapsingHeader("Cameras", psim.ImGuiTreeNodeFlags_DefaultOpen):
             psim.Spacing()
@@ -3568,6 +3577,7 @@ class SionnaRtGui:
                 case "Scene":
                     # The scene picker and camera presets live in the top bar
                     self.section_scene(include_picker=False, include_camera=False)
+                    self.section_addons()
                 case "Render":
                     self.section_cameras()
                     self.section_rendering()
@@ -3845,6 +3855,7 @@ class SionnaRtGui:
         self.section_radio_map()
         self.section_paths()
         self.section_animation()
+        self.section_addons()
         self.section_rendering()
         psim.End()  # End main Sionna RT window
 
