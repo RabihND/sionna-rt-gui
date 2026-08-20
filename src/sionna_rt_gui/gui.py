@@ -16,6 +16,7 @@ from sionna import rt
 from sionna.rt.scene_utils import remove_objects_duplicate_vertices
 
 from . import __version__ as GUI_VERSION
+from .addons import AddonManager
 from .animation import AnimationConfig, animation_gui, animation_tick
 from .antenna_array import antenna_array_gui
 from .config import (
@@ -241,6 +242,9 @@ class SionnaRtGui:
             self.create_example_scenario(
                 set_camera=not was_initialized, add_radio_map=False
             )
+
+        # --- Addons
+        self.addons = AddonManager(self)
 
     def create_example_scenario(
         self, set_camera: bool = True, add_radio_map: bool = True
@@ -525,6 +529,7 @@ class SionnaRtGui:
 
         # --- GUI
         self.gui()
+        self.addons.tick()
         self.frame_i += 1
         self.previous_camera_pose = ps.get_camera_view_matrix()
 
@@ -1282,6 +1287,9 @@ class SionnaRtGui:
         if psim.CollapsingHeader("Animation"):
             animation_gui(self)
             psim.Spacing()
+
+        if psim.CollapsingHeader("Addons"):
+            self.addons.draw_manager_gui()
 
         if psim.CollapsingHeader("Rendering"):
             psim.Spacing()
