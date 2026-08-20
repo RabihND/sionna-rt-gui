@@ -10,6 +10,7 @@ scenes. The recent list is persisted to ``~/.sionna-rt-gui/recent_scenes.yaml``.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 
 import yaml
@@ -59,16 +60,53 @@ def add_recent_scene(path: str, recent: list[str]) -> list[str]:
     return recent
 
 
+def save_scene_copy(app, dest_parent: str, name: str) -> str | None:
+    """
+    Copy the directory of the currently loaded scene (scene.xml + meshes)
+    to ``dest_parent/name``. Returns the new scene XML path, or None.
+    """
+    src_xml = app.cfg.scene_filename
+    if not (src_xml and os.path.isfile(src_xml)):
+        app.addons.notify("No scene file to save.")
+        return None
+    name = name.strip() or "scene"
+    src_dir = os.path.dirname(os.path.realpath(src_xml))
+    dest_dir = os.path.join(dest_parent, name)
+    if os.path.exists(dest_dir):
+        app.addons.notify(f"Not saved: '{dest_dir}' already exists.")
+        return None
+    try:
+        shutil.copytree(src_dir, dest_dir)
+    except OSError as e:
+        app.addons.notify(f"Failed to save scene: {e}")
+        return None
+    new_xml = os.path.join(dest_dir, os.path.basename(src_xml))
+    app.cfg.scene_filename = new_xml
+    app.recent_scenes = add_recent_scene(new_xml, app.recent_scenes)
+    app.addons.notify(f"Scene saved to {dest_dir}")
+    return new_xml
+
+
 class FileBrowser:
-    """Minimal in-app browser for picking a scene XML file."""
+    """Minimal in-app browser for picking a scene XML file or a save location."""
 
     def __init__(self):
         self.visible: bool = False
         self.current_dir: str = os.path.expanduser("~")
+        self.save_mode: bool = False
+        self.save_name: str = "scene"
 
     def open(self, start_dir: str | None = None) -> None:
         if start_dir and os.path.isdir(start_dir):
             self.current_dir = start_dir
+        self.save_mode = False
+        self.visible = True
+
+    def open_save(self, default_name: str, start_dir: str | None = None) -> None:
+        if start_dir and os.path.isdir(start_dir):
+            self.current_dir = start_dir
+        self.save_name = default_name
+        self.save_mode = True
         self.visible = True
 
     def draw(self, app) -> None:
@@ -82,7 +120,8 @@ class FileBrowser:
             (0.5 * (window_resolution[0] - w), 0.5 * (window_resolution[1] - h)),
             psim.ImGuiCond_FirstUseEver,
         )
-        _, self.visible = psim.Begin("Open scene##file_browser", open=True)
+        title = "Save scene##file_browser" if self.save_mode else "Open scene##file_browser"
+        _, self.visible = psim.Begin(title, open=True)
 
         changed, edited = psim.InputText("##file_browser_path", self.current_dir)
         if changed and os.path.isdir(os.path.expanduser(edited)):
@@ -109,17 +148,28 @@ class FileBrowser:
             if os.path.isdir(full):
                 if _clicked(psim.Selectable(f"[{entry}]##fb_dir_{entry}", False)):
                     self.current_dir = full
-        for entry in entries:
-            if entry.startswith(".") or not entry.endswith(".xml"):
-                continue
-            full = os.path.join(self.current_dir, entry)
-            if os.path.isfile(full):
-                if _clicked(psim.Selectable(f"{entry}##fb_file_{entry}", False)):
-                    app.load_scene_requested = full
-                    self.visible = False
+        if not self.save_mode:
+            for entry in entries:
+                if entry.startswith(".") or not entry.endswith(".xml"):
+                    continue
+                full = os.path.join(self.current_dir, entry)
+                if os.path.isfile(full):
+                    if _clicked(psim.Selectable(f"{entry}##fb_file_{entry}", False)):
+                        app.load_scene_requested = full
+                        self.visible = False
         psim.EndChild()
 
-        psim.TextDisabled("Click a scene .xml file to load it.")
+        if self.save_mode:
+            psim.SetNextItemWidth(200 * scale)
+            _, self.save_name = psim.InputText("##fb_save_name", self.save_name)
+            psim.SameLine()
+            if psim.Button("Save here##file_browser"):
+                if save_scene_copy(app, self.current_dir, self.save_name):
+                    self.visible = False
+            psim.SameLine()
+            psim.TextDisabled("Saves the scene folder under this directory.")
+        else:
+            psim.TextDisabled("Click a scene .xml file to load it.")
         psim.SameLine()
         if psim.Button("Cancel##file_browser"):
             self.visible = False
@@ -138,6 +188,14 @@ def file_menu_gui(app) -> None:
             if app.recent_scenes:
                 start = os.path.dirname(app.recent_scenes[0])
             app.file_browser.open(start)
+            psim.CloseCurrentPopup()
+
+        if _clicked(psim.MenuItem("Save scene as...")):
+            current = app.cfg.scene_filename or ""
+            default_name = (
+                os.path.basename(os.path.dirname(current)) if current else "scene"
+            )
+            app.file_browser.open_save(default_name)
             psim.CloseCurrentPopup()
 
         if psim.BeginMenu("Open recent"):
