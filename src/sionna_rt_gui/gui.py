@@ -2220,11 +2220,11 @@ class SionnaRtGui:
 
         # Otherwise a scene object, resolved by tracing into the scene so that
         # it works in the ray-traced view too
-        object_name, _ = self.resolve_scene_object_at(
+        object_name, snap_position = self.resolve_scene_object_at(
             pick_result.screen_coords, pick_result=pick_result
         )
         if object_name is not None and object_name not in self.background_objects:
-            self.select_scene_object(object_name)
+            self.select_scene_object(object_name, anchor=snap_position)
             return True
 
         # The ground plane counts as empty space: selecting it would put the
@@ -2278,7 +2278,7 @@ class SionnaRtGui:
             psim.Separator()
             name = self.context_menu_object
             if psim.MenuItem(f"Select '{name}'"):
-                self.select_scene_object(name)
+                self.select_scene_object(name, anchor=self.context_menu_position)
             if name in self.placed_assets and psim.MenuItem(f"Remove '{name}'"):
                 self.remove_asset(name)
 
@@ -2358,9 +2358,14 @@ class SionnaRtGui:
         self.selected_type = selection_type
         self.properties_tab = PROPERTIES_TABS.index("Object")
 
-    def select_scene_object(self, object_name: str) -> None:
+    def select_scene_object(self, object_name: str, anchor=None) -> None:
         self.selected_camera = None
-        """Make a scene object (a building, a placed asset, ...) the active one."""
+        """Make a scene object (a building, a placed asset, ...) the active one.
+
+        ``anchor`` is the clicked world position, if known. Merged meshes
+        (e.g. all buildings of an imported scene) have their origin at the
+        scene center, so the gizmo is shown at the click point instead.
+        """
         scene_object = self.scene.get(object_name)
         if scene_object is None:
             return
@@ -2368,11 +2373,18 @@ class SionnaRtGui:
         self.selected_object = scene_object
         self.selected_type = SelectionType.Mesh
         self.properties_tab = PROPERTIES_TABS.index("Object")
+        if anchor is not None:
+            anchor = np.asarray(anchor, dtype=float).squeeze()
+            if anchor.shape == (3,) and np.all(np.isfinite(anchor)):
+                self.object_gizmo_anchor_offset = (
+                    anchor - scene_object.position.numpy().squeeze()
+                )
 
     def clear_selection(self):
         self.selected_object = None
         self.selected_type = None
         self.object_gizmo_previous = None
+        self.object_gizmo_anchor_offset = None
         if ps.has_point_cloud("Gizmo"):
             ps.get_point_cloud("Gizmo").remove()
         if ps.has_curve_network("Trajectory"):

@@ -37,6 +37,10 @@ class SelectionType(Enum):
 
 
 GIZMO_SCALE = 40
+# Polyscope draws the transformation gizmo over the whole window, including
+# the workspace panels, so keep it compact: it should read as a handle on the
+# object, not sweep across the UI.
+GIZMO_SHRINK = 0.5
 
 
 def gps_property_row(gui, position) -> None:
@@ -234,6 +238,7 @@ def scene_object_contents(gui: "SionnaRtGui", scene_object: rt.SceneObject) -> N
         gizmo = struct.get_transformation_gizmo()
         gizmo.set_enabled(True)
         gizmo.set_allow_scaling(False)
+        gizmo.set_gizmo_scale(gizmo.get_gizmo_scale() * GIZMO_SHRINK)
         struct.set_ignore_slice_plane(DEFAULT_SLICE_PLANE_NAME, True)
     else:
         struct = ps.get_point_cloud("Gizmo")
@@ -255,6 +260,11 @@ def scene_object_contents(gui: "SionnaRtGui", scene_object: rt.SceneObject) -> N
     target = np.eye(4)
     target[:3, :3] = rotation_matrix(scene_object.orientation).numpy()[..., 0]
     target[:3, 3] = scene_object.position.numpy().squeeze()
+    # Merged meshes (all buildings of an imported scene, ...) have their origin
+    # at the scene center; show the gizmo at the clicked point instead.
+    anchor_offset = getattr(gui, "object_gizmo_anchor_offset", None)
+    if anchor_offset is not None:
+        target[:3, 3] += anchor_offset
     if previous is None or not np.allclose(target, to_world):
         struct.set_transform(target)
     gui.object_gizmo_previous = target
@@ -534,6 +544,7 @@ def selection_contents(
                 gizmo = struct.get_transformation_gizmo()
                 gizmo.set_enabled(True)
                 gizmo.set_allow_scaling(False)
+                gizmo.set_gizmo_scale(gizmo.get_gizmo_scale() * GIZMO_SHRINK)
                 struct.set_ignore_slice_plane(DEFAULT_SLICE_PLANE_NAME, True)
             else:
                 struct = ps.get_point_cloud("Gizmo")
